@@ -20,7 +20,7 @@ pub fn run(config: &Config, input: &str) -> Result<(), RspassError> {
             RspassError::Io(e)
         }
     })?;
-    let plaintext = decrypt::with_identities_and_prompts(config, &ciphertext)?;
+    let plaintext = decrypt::with_identities_and_prompts(config, &ciphertext, Some(input))?;
     std::io::stdout().write_all(&plaintext)?;
     Ok(())
 }

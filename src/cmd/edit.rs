@@ -105,11 +105,8 @@ fn load_existing(
     input: &str,
 ) -> Result<Zeroizing<Vec<u8>>, RspassError> {
     match fs::read(&resolved.age_file) {
-        Ok(ct) => decrypt::with_identities_and_prompts(config, &ct),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let _ = input; // kept for parity with show's error message
-            Ok(Zeroizing::new(Vec::new()))
-        }
+        Ok(ct) => decrypt::with_identities_and_prompts(config, &ct, Some(input)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Zeroizing::new(Vec::new())),
         Err(e) => Err(RspassError::Io(e)),
     }
 }
