@@ -9,6 +9,8 @@ mod path;
 mod recipients;
 mod tty;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 use crate::error::RspassError;
@@ -18,6 +20,11 @@ use crate::error::RspassError;
 struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Path to the config file. Overrides the default
+    /// `$XDG_CONFIG_HOME/rspass/config.yaml` (or `~/.config/rspass/config.yaml`).
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -55,21 +62,27 @@ fn main() -> std::process::ExitCode {
 }
 
 fn dispatch(cli: Cli) -> Result<(), RspassError> {
+    tracing::debug!("dispatch: {:?}", cli.command);
+    let config_path = cli.config;
+    let load_config = || match &config_path {
+        Some(p) => config::Config::load_from(p),
+        None => config::Config::load(),
+    };
     match cli.command {
         Command::Show { path } => {
-            let config = config::Config::load()?;
+            let config = load_config()?;
             cmd::show::run(&config, &path)
         }
         Command::Edit { path } => {
-            let config = config::Config::load()?;
+            let config = load_config()?;
             cmd::edit::run(&config, &path)
         }
         Command::List { prefix } => {
-            let config = config::Config::load()?;
+            let config = load_config()?;
             cmd::list::run(&config, prefix.as_deref())
         }
         Command::Agent { op } => {
-            let config = config::Config::load()?;
+            let config = load_config()?;
             cmd::agent::run(&config, op)
         }
         Command::AgentDaemon => {
