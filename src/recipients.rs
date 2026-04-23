@@ -108,10 +108,22 @@ fn parse(content: &str, path: &Path) -> Result<Vec<BoxRecipient>, RecipientError
 
 fn parse_line(line: &str) -> Result<BoxRecipient, String> {
     if line.starts_with("age1") {
-        let r = age::x25519::Recipient::from_str(line).map_err(|e| e.to_string())?;
+        // age X25519 pubkeys never contain whitespace, so everything after
+        // the first token is treated as a trailing comment / note and
+        // discarded. This keeps rspass's `.age-recipients` tolerant of
+        // lines like `age1xyz # alice@laptop`, a convention gopass and
+        // many wrappers rely on.
+        let token = line.split_whitespace().next().unwrap_or("");
+        let r = age::x25519::Recipient::from_str(token).map_err(|e| e.to_string())?;
         Ok(Box::new(r))
     } else if line.starts_with("ssh-ed25519 ") || line.starts_with("ssh-rsa ") {
-        // `age::ssh::ParseRecipientKeyError` is not Display, so we use Debug.
+        // SSH public keys encode their own whitespace-separated comment
+        // (e.g. `user@host`) after the base64 blob, so the whole line
+        // must reach age::ssh::Recipient::from_str unmodified. That also
+        // means `#`-style tail comments are *not* supported on SSH lines;
+        // use a preceding `#`-only line for any notes.
+        //
+        // `age::ssh::ParseRecipientKeyError` is not Display, so use Debug.
         let r = age::ssh::Recipient::from_str(line).map_err(|e| format!("{e:?}"))?;
         Ok(Box::new(r))
     } else {
@@ -276,6 +288,32 @@ mod tests {
         let target = store.join("x.age");
         let recs = load_for(&target, store).unwrap();
         assert!(recs.is_empty());
+    }
+
+    #[test]
+    fn age_recipient_accepts_tail_comment() {
+        let pubkey = gen_age_pubkey();
+        let content = format!("{pubkey}   # alice@laptop\n");
+        let dir = tempdir().unwrap();
+        let store = dir.path();
+        fs::write(store.join(".age-recipients"), content).unwrap();
+        let target = store.join("x.age");
+        let recs = load_for(&target, store).unwrap();
+        assert_eq!(recs.len(), 1);
+    }
+
+    #[test]
+    fn age_recipient_accepts_non_hash_tail_text() {
+        // First whitespace-delimited token is the key; anything after is
+        // discarded, even without a `#`.
+        let pubkey = gen_age_pubkey();
+        let content = format!("{pubkey} erning production backup\n");
+        let dir = tempdir().unwrap();
+        let store = dir.path();
+        fs::write(store.join(".age-recipients"), content).unwrap();
+        let target = store.join("x.age");
+        let recs = load_for(&target, store).unwrap();
+        assert_eq!(recs.len(), 1);
     }
 
     #[test]

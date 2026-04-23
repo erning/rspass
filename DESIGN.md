@@ -213,8 +213,8 @@ ssh-rsa AAAA... user@host
 - 支持 `age1...`（X25519）和 `ssh-ed25519` / `ssh-rsa` 两种 SSH 类型（依赖 `age` crate 的 `ssh` feature）
 - trim 后为空 → 忽略
 - trim 后以 `#` 开头 → 整行注释，忽略
-- 其他行原样交给 age / SSH recipient parser
-- 不支持行末注释；需要备注时写在 recipient 前一行，避免误伤 SSH public key comment
+- `age1...` 行：取第一个 whitespace-delimited token 作为 recipient，**后面部分（`# 注释`、自由文本等）全部丢弃**。这保持与 gopass 等包装器常见写法 `age1xyz # alice@laptop` 兼容（age X25519 pubkey 本身不含空格，所以截断是无损的）
+- SSH 行：整行原样交给 `age::ssh::Recipient::from_str`，因为 SSH pubkey 的尾部 `user@host` 是格式的一部分，不是可裁的"注释"；SSH 行**不支持** `#` 尾注释，需要备注就在前一行写 `# note` 整行注释
 
 ### 解析规则
 
