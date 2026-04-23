@@ -22,3 +22,13 @@ tempfile = "3"
 serde_json = "1"
 base64 = "0.22"
 libc = "0.2"
+
+# Build dependencies with optimizations even in dev/test profiles. The age
+# crate (and its crypto transitive deps like rsa, scrypt, chacha20poly1305)
+# is painfully slow at opt-level=0; this keeps the rspass crate itself
+# unoptimized for fast iteration while making tests run at release-ish speed.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test.package."*"]
+opt-level = 3
