@@ -1,9 +1,10 @@
-use std::io::Read;
+use std::io::{Read, Write};
 
 use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::identity::BoxIdentity;
+use crate::recipients::BoxRecipient;
 
 #[derive(Debug, Error)]
 pub enum CryptoError {
@@ -11,9 +12,9 @@ pub enum CryptoError {
     NotAge(String),
     #[error("no matching identity")]
     NoMatchingIdentity,
-    #[error("decrypt io error: {0}")]
+    #[error("crypto io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("decrypt error: {0}")]
+    #[error("crypto error: {0}")]
     Other(String),
 }
 
@@ -39,6 +40,24 @@ pub fn decrypt(
     let mut plaintext = Vec::new();
     reader.read_to_end(&mut plaintext)?;
     Ok(Zeroizing::new(plaintext))
+}
+
+/// Encrypt `plaintext` for `recipients` and return the binary age ciphertext.
+///
+/// Binary output only — no ASCII armor (DESIGN.md §10). Callers write the
+/// result to `.age` files atomically via the `edit` command's write flow.
+pub fn encrypt(plaintext: &[u8], recipients: &[BoxRecipient]) -> Result<Vec<u8>, CryptoError> {
+    if recipients.is_empty() {
+        return Err(CryptoError::Other("no recipients".into()));
+    }
+    let iter = recipients.iter().map(|b| b.as_ref());
+    let encryptor = age::Encryptor::with_recipients(iter)
+        .map_err(|e| CryptoError::Other(e.to_string()))?;
+    let mut out = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut out)?;
+    writer.write_all(plaintext)?;
+    writer.finish()?;
+    Ok(out)
 }
 
 #[cfg(test)]

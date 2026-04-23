@@ -5,7 +5,7 @@ use std::str::FromStr;
 use age::Recipient;
 use thiserror::Error;
 
-pub type BoxRecipient = Box<dyn Recipient + Send + 'static>;
+pub type BoxRecipient = Box<dyn Recipient>;
 
 #[derive(Debug, Error)]
 pub enum RecipientError {
@@ -31,15 +31,38 @@ pub enum RecipientError {
 /// found along the walk wins; parent files are not merged in. Directories
 /// that want the parent's recipients simply don't create a local file.
 ///
-/// `store_root` should be canonicalized by the caller; `target` need not exist.
+/// `target` need not exist. `store_root` is canonicalized internally so
+/// callers don't have to worry about symlink chains like macOS's
+/// `/var/folders/...` → `/private/var/folders/...`.
 pub fn load_for(target: &Path, store_root: &Path) -> Result<Vec<BoxRecipient>, RecipientError> {
+    let store_root_canon =
+        fs::canonicalize(store_root).map_err(|e| RecipientError::Io(store_root.to_path_buf(), e))?;
     let start = target.parent().unwrap_or(target);
-    let (content, path) = walk_up(start, store_root)?;
+    let (content, path) = walk_up(start, &store_root_canon)?;
     parse(&content, &path)
 }
 
 fn walk_up(from: &Path, store_root: &Path) -> Result<(String, PathBuf), RecipientError> {
+    // Canonicalize the starting dir so its prefix relationship with `store_root`
+    // (which the caller must pass canonicalized) is symbolic-link-agnostic.
+    // If `from` doesn't exist yet (edit's new-file case), walk up to the
+    // nearest existing ancestor and canonicalize that; the pre-existing
+    // portion of the path is all we need for the walk since anything below
+    // it cannot hold an `.age-recipients` file.
     let mut cur = from.to_path_buf();
+    while !cur.exists() {
+        match cur.parent() {
+            Some(p) => cur = p.to_path_buf(),
+            None => {
+                return Err(RecipientError::NotFound {
+                    target: from.to_path_buf(),
+                    store_root: store_root.to_path_buf(),
+                });
+            }
+        }
+    }
+    let mut cur = fs::canonicalize(&cur).map_err(|e| RecipientError::Io(cur, e))?;
+
     loop {
         // Defensive bound: never walk above the store root, even if `from`
         // pointed outside it due to a caller bug.

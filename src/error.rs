@@ -25,6 +25,10 @@ pub enum RspassError {
     SecretNotFound(String),
     #[error("passphrase entry cancelled")]
     PassphraseCancelled,
+    #[error("editor exited non-zero")]
+    EditorFailed,
+    #[error("target path escaped store root: {0}")]
+    PathEscape(std::path::PathBuf),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

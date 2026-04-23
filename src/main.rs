@@ -1,10 +1,10 @@
 mod cmd;
 mod config;
 mod crypto;
+mod decrypt;
 mod error;
 mod identity;
 mod path;
-#[allow(dead_code)] // recipient loading is consumed by `edit` in step 5
 mod recipients;
 mod tty;
 
@@ -67,7 +67,10 @@ fn dispatch(cli: Cli) -> Result<(), RspassError> {
             let config = config::Config::load()?;
             cmd::show::run(&config, &path)
         }
-        Command::Edit { .. } => todo!("edit is implemented in step 5"),
+        Command::Edit { path } => {
+            let config = config::Config::load()?;
+            cmd::edit::run(&config, &path)
+        }
         Command::Agent { .. } => todo!("agent cli is implemented in step 7"),
         Command::AgentDaemon => todo!("agent daemon is implemented in step 6"),
     }
