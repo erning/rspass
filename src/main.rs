@@ -5,6 +5,8 @@
 mod config;
 #[allow(dead_code)]
 mod path;
+#[allow(dead_code)]
+mod recipients;
 
 use clap::{Parser, Subcommand};
 
