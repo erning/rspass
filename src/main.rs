@@ -6,6 +6,7 @@ mod identity;
 mod path;
 #[allow(dead_code)] // recipient loading is consumed by `edit` in step 5
 mod recipients;
+mod tty;
 
 use clap::{Parser, Subcommand};
 

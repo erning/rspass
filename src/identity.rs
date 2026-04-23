@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -12,6 +12,8 @@ pub enum IdentityError {
     Open(PathBuf, #[source] std::io::Error),
     #[error("failed to parse identity {0}: {1}")]
     Parse(PathBuf, String),
+    #[error("wrong passphrase for identity {0}")]
+    WrongPassphrase(PathBuf),
 }
 
 /// An identity source that has been opened and classified.
@@ -48,6 +50,42 @@ fn load_plaintext(path: &Path) -> Result<Vec<BoxIdentity>, IdentityError> {
     let file = File::open(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
     let reader = BufReader::new(file);
     let id_file = age::IdentityFile::from_buffer(reader)
+        .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
+    let ids = id_file
+        .into_identities()
+        .map_err(|e| IdentityError::Parse(path.to_path_buf(), format!("{e:?}")))?;
+    Ok(ids)
+}
+
+/// Decrypt an scrypt-protected identity file with the given passphrase and
+/// parse the plaintext as an age identity file (possibly containing multiple
+/// `AGE-SECRET-KEY-1...` lines).
+///
+/// A wrong passphrase surfaces as [`IdentityError::WrongPassphrase`] so the
+/// caller can continue on to the next identity. A malformed file surfaces as
+/// [`IdentityError::Parse`] and should abort.
+pub fn unlock_scrypt(path: &Path, passphrase: &str) -> Result<Vec<BoxIdentity>, IdentityError> {
+    let ciphertext =
+        std::fs::read(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
+    let decryptor = age::Decryptor::new(&ciphertext[..])
+        .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
+    let secret = age::secrecy::SecretString::from(passphrase.to_string());
+    let scrypt_id = age::scrypt::Identity::new(secret);
+    let mut reader = decryptor
+        .decrypt(std::iter::once(&scrypt_id as &dyn age::Identity))
+        .map_err(|e| match e {
+            age::DecryptError::DecryptionFailed
+            | age::DecryptError::NoMatchingKeys
+            | age::DecryptError::KeyDecryptionFailed => {
+                IdentityError::WrongPassphrase(path.to_path_buf())
+            }
+            other => IdentityError::Parse(path.to_path_buf(), other.to_string()),
+        })?;
+    let mut plaintext = Vec::new();
+    reader
+        .read_to_end(&mut plaintext)
+        .map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
+    let id_file = age::IdentityFile::from_buffer(std::io::Cursor::new(&plaintext))
         .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
     let ids = id_file
         .into_identities()
@@ -138,6 +176,51 @@ mod tests {
         assert!(matches!(
             expect_err(load(&path)),
             IdentityError::Parse(_, _)
+        ));
+    }
+
+    fn write_scrypt_wrapped_identity(
+        path: &Path,
+        inner: &age::x25519::Identity,
+        passphrase: &str,
+    ) {
+        use std::io::Write;
+        let inner_text = format!("{}\n", inner.to_string().expose_secret());
+        let secret = age::secrecy::SecretString::from(passphrase.to_string());
+        let mut recipient = age::scrypt::Recipient::new(secret);
+        // Keep the work factor low so tests run fast (default ~1s on
+        // modern hardware). Factor 2 is plenty for correctness checks.
+        recipient.set_work_factor(2);
+        let r: &dyn age::Recipient = &recipient;
+        let encryptor = age::Encryptor::with_recipients(std::iter::once(r)).unwrap();
+        let mut ct = Vec::new();
+        let mut w = encryptor.wrap_output(&mut ct).unwrap();
+        w.write_all(inner_text.as_bytes()).unwrap();
+        w.finish().unwrap();
+        std::fs::write(path, ct).unwrap();
+    }
+
+    #[test]
+    fn unlock_scrypt_round_trip() {
+        let dir = tempdir().unwrap();
+        let inner = age::x25519::Identity::generate();
+        let path = dir.path().join("id.scrypt");
+        write_scrypt_wrapped_identity(&path, &inner, "test-pass-XYZ");
+
+        // load() must classify as Scrypt (header sniff, no passphrase needed).
+        match load(&path).unwrap() {
+            Loaded::Scrypt { path: p } => assert_eq!(p, path),
+            Loaded::Plaintext(_) => panic!("expected Scrypt classification"),
+        }
+
+        // Right passphrase unlocks.
+        let ids = unlock_scrypt(&path, "test-pass-XYZ").unwrap();
+        assert_eq!(ids.len(), 1);
+
+        // Wrong passphrase surfaces WrongPassphrase (not Parse or Open).
+        assert!(matches!(
+            expect_err(unlock_scrypt(&path, "not-the-right-pass")),
+            IdentityError::WrongPassphrase(_)
         ));
     }
 }

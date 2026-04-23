@@ -19,8 +19,12 @@ pub enum RspassError {
     Identity(#[from] crate::identity::IdentityError),
     #[error(transparent)]
     Crypto(#[from] crate::crypto::CryptoError),
+    #[error(transparent)]
+    Tty(#[from] crate::tty::TtyError),
     #[error("secret not found: {0}")]
     SecretNotFound(String),
+    #[error("passphrase entry cancelled")]
+    PassphraseCancelled,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -30,6 +34,7 @@ impl RspassError {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Crypto(crate::crypto::CryptoError::NoMatchingIdentity) => 2,
+            Self::PassphraseCancelled => 3,
             _ => 1,
         }
     }
