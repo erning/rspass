@@ -20,7 +20,7 @@ use crate::error::RspassError;
 struct Cli {
     /// Path to the config file. Overrides the default
     /// `$XDG_CONFIG_HOME/rspass/config.yaml` (or `~/.config/rspass/config.yaml`).
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(short, long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -36,6 +36,8 @@ enum Command {
     /// List secrets as a tree (gopass-style).
     #[command(alias = "ls")]
     List { prefix: Option<String> },
+    /// Print the effective config as YAML (after `include:` resolution).
+    Config,
     /// Manage the in-memory identity agent.
     Agent {
         #[command(subcommand)]
@@ -76,6 +78,10 @@ fn dispatch(cli: Cli) -> Result<(), RspassError> {
         Command::List { prefix } => {
             let config = load_config()?;
             cmd::list::run(&config, prefix.as_deref())
+        }
+        Command::Config => {
+            let config = load_config()?;
+            cmd::config::run(&config)
         }
         Command::Agent { op } => {
             let config = load_config()?;
