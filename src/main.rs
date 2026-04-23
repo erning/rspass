@@ -18,9 +18,6 @@ use crate::error::RspassError;
 #[derive(Parser, Debug)]
 #[command(name = "rspass", version, about = "Minimal age-only secret manager")]
 struct Cli {
-    #[arg(short, long, global = true)]
-    verbose: bool,
-
     /// Path to the config file. Overrides the default
     /// `$XDG_CONFIG_HOME/rspass/config.yaml` (or `~/.config/rspass/config.yaml`).
     #[arg(long, global = true, value_name = "PATH")]
@@ -51,7 +48,7 @@ enum Command {
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    init_tracing();
     match dispatch(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -62,7 +59,6 @@ fn main() -> std::process::ExitCode {
 }
 
 fn dispatch(cli: Cli) -> Result<(), RspassError> {
-    tracing::debug!("dispatch: {:?}", cli.command);
     let config_path = cli.config;
     let load_config = || match &config_path {
         Some(p) => config::Config::load_from(p),
@@ -95,10 +91,9 @@ fn dispatch(cli: Cli) -> Result<(), RspassError> {
     }
 }
 
-fn init_tracing(verbose: bool) {
-    let level = if verbose { "debug" } else { "warn" };
+fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
