@@ -1,14 +1,15 @@
-// Modules below are exercised by unit tests now and consumed by the
-// command handlers in later steps; the dead-code allow will be removed
-// once `show` / `edit` are wired up.
-#[allow(dead_code)]
+mod cmd;
 mod config;
-#[allow(dead_code)]
+mod crypto;
+mod error;
+mod identity;
 mod path;
-#[allow(dead_code)]
+#[allow(dead_code)] // recipient loading is consumed by `edit` in step 5
 mod recipients;
 
 use clap::{Parser, Subcommand};
+
+use crate::error::RspassError;
 
 #[derive(Parser, Debug)]
 #[command(name = "rspass", version, about = "Minimal age-only secret manager")]
@@ -37,6 +38,7 @@ enum Command {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(dead_code)]
 enum AgentOp {
     Start,
     Stop,
@@ -49,8 +51,21 @@ enum AgentOp {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
+    match dispatch(cli) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rspass: {e}");
+            std::process::ExitCode::from(e.exit_code())
+        }
+    }
+}
+
+fn dispatch(cli: Cli) -> Result<(), RspassError> {
     match cli.command {
-        Command::Show { .. } => todo!("show is implemented in step 3"),
+        Command::Show { path } => {
+            let config = config::Config::load()?;
+            cmd::show::run(&config, &path)
+        }
         Command::Edit { .. } => todo!("edit is implemented in step 5"),
         Command::Agent { .. } => todo!("agent cli is implemented in step 7"),
         Command::AgentDaemon => todo!("agent daemon is implemented in step 6"),

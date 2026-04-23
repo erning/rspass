@@ -6,6 +6,7 @@ use crate::config::{Config, ExpansionError, expand_path};
 
 /// Result of resolving a `[MOUNT/]REL/PATH` input to filesystem locations.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // store_root, rel, mount are consumed by edit in step 5
 pub struct Resolved {
     /// Matched mount key (empty string `""` for the root mount).
     pub mount: String,
