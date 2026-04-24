@@ -4,9 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Pre-implementation. `DESIGN.md` is the specification and the source of truth; there is no Rust code yet. `README.md` is a placeholder.
-
-When asked to start or continue implementation, work through §12 of `DESIGN.md` in order (step 1 is `config.rs` + `path.rs` with unit tests). Each step in that list is intended to land as one commit.
+`docs/DESIGN.md` is the canonical spec. Implementation lives in `src/`, following the module layout in `docs/DESIGN.md` §12. `README.md` is the public-facing intro.
 
 ## Non-negotiable design decisions
 
@@ -25,9 +23,9 @@ The following were locked in during earlier design discussion. Do not reopen or 
 - **Single binary.** The agent daemon is the same executable invoked via hidden subcommand `__agent-daemon`.
 - **Unix socket security model** is `0600` permissions + `getpeereid` UID check. That is sufficient for the stated threat model — do not add session tokens, abstract namespaces, or encrypted-channel-over-socket layers.
 
-## When DESIGN.md and reality disagree
+## When docs/DESIGN.md and reality disagree
 
-DESIGN.md is canonical. If implementation reveals that a spec detail is unworkable or under-specified, **stop and raise it with the user before diverging**. Do not silently change behavior, and do not edit DESIGN.md unilaterally to match shipped code.
+docs/DESIGN.md is canonical. If implementation reveals that a spec detail is unworkable or under-specified, **stop and raise it with the user before diverging**. Do not silently change behavior, and do not edit docs/DESIGN.md unilaterally to match shipped code.
 
 ## Commit style
 
@@ -35,4 +33,4 @@ Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
 
 ## Build / test
 
-No build or test commands yet — no `Cargo.toml`, no source. Once the crate is bootstrapped, `cargo build` / `cargo test` / `cargo clippy` apply. Agent integration tests must use a scratch `HOME` and `XDG_RUNTIME_DIR` (or `RSPASS_AGENT_SOCK`) so they can't clobber a running user agent.
+Standard `cargo build` / `cargo test` / `cargo clippy` / `cargo fmt`. Agent integration tests must use a scratch `HOME` and `XDG_RUNTIME_DIR` (or `RSPASS_AGENT_SOCK`) so they can't clobber a running user agent.

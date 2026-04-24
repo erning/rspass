@@ -1,11 +1,11 @@
 //! Shared decrypt-with-fallback used by both `show` and `edit`.
 //!
-//! Order of attempts (DESIGN.md §§7–9):
+//! Order of attempts (docs/DESIGN.md §§7–9):
 //! 1. If the agent is reachable, send `Decrypt{ciphertext, context}` first.
 //!    - `ok` → return plaintext.
 //!    - `no_matching_identity` or any transport error → fall through.
 //!    - Failures here **never** trigger exit 4: `show` / `edit` treat the
-//!      agent as an optimization, not a requirement (DESIGN.md §11).
+//!      agent as an optimization, not a requirement (docs/DESIGN.md §11).
 //! 2. Plaintext identities from `config.identities` (no prompt).
 //! 3. scrypt / encrypted SSH identities from `config.identities`, skipping
 //!    any whose file path is already loaded in the agent (dedup based on the

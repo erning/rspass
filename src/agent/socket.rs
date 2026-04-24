@@ -1,6 +1,6 @@
 //! Socket path resolution and peer identity checks.
 //!
-//! Path precedence per DESIGN.md §8:
+//! Path precedence per docs/DESIGN.md §8:
 //! 1. `$RSPASS_AGENT_SOCK` — explicit override.
 //! 2. `$XDG_RUNTIME_DIR/rspass/agent.sock` — per-user runtime dir.
 //! 3. `$TMPDIR/rspass-agent.$UID/agent.sock` — macOS default and Linux

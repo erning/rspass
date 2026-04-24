@@ -679,8 +679,9 @@ gopass 风格的树形列表，仅读取文件名，不做任何解密。别名 
 ```
 rspass/
 ├── Cargo.toml
-├── DESIGN.md                    # 本文档
 ├── README.md
+├── docs/
+│   └── DESIGN.md                # 本文档
 └── src/
     ├── main.rs                  # clap 入口、子命令分发
     ├── config.rs                # config.yaml 加载、store/identity 查找

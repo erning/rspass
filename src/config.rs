@@ -57,7 +57,7 @@ impl Config {
     }
 
     /// Parse the main config at `path` and merge any files listed in its
-    /// `include:` field. See DESIGN.md §5 for load order and merge rules.
+    /// `include:` field. See docs/DESIGN.md §5 for load order and merge rules.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let mut main = load_raw(path)?;
         let includes = std::mem::take(&mut main.include);
@@ -254,7 +254,7 @@ fn validate_mount_key(key: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Expand `~`, `~/`, `${VAR}`, `\~`, `\$` per DESIGN.md §5.
+/// Expand `~`, `~/`, `${VAR}`, `\~`, `\$` per docs/DESIGN.md §5.
 ///
 /// Only the leading `~` or `\~` is interpreted as the tilde marker;
 /// `~` elsewhere is literal. `${VAR}` anywhere is expanded from the

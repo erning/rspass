@@ -44,7 +44,7 @@ impl Callbacks for TtyCallbacks {
 /// echo disabled.
 ///
 /// Returns `Ok(Zeroizing<String>)` for any successful read, **including empty
-/// input**. The caller interprets emptiness per DESIGN.md §7: "empty input =
+/// input**. The caller interprets emptiness per docs/DESIGN.md §7: "empty input =
 /// skip the current identity, try the next"; rspass never forwards an empty
 /// string to age as a passphrase.
 ///

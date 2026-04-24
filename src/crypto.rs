@@ -44,7 +44,7 @@ pub fn decrypt(
 
 /// Encrypt `plaintext` for `recipients` and return the binary age ciphertext.
 ///
-/// Binary output only — no ASCII armor (DESIGN.md §10). Callers write the
+/// Binary output only — no ASCII armor (docs/DESIGN.md §10). Callers write the
 /// result to `.age` files atomically via the `edit` command's write flow.
 pub fn encrypt(plaintext: &[u8], recipients: &[BoxRecipient]) -> Result<Vec<u8>, CryptoError> {
     if recipients.is_empty() {

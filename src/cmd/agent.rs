@@ -2,7 +2,7 @@
 //!
 //! Each subcommand is a thin wrapper over the `agent::client` + `agent::spawn`
 //! modules plus one helper for bundling identity data to send over the
-//! protocol. The no-arg `add` case implements DESIGN.md §8 "agent add (无参)
+//! protocol. The no-arg `add` case implements docs/DESIGN.md §8 "agent add (无参)
 //! 流程" with per-identity summaries and graceful skip/cancel semantics.
 
 use std::collections::HashSet;
@@ -294,7 +294,7 @@ enum AddOutcome {
 
 /// Classify the identity file at `path` and produce the identity text to
 /// send to the daemon. For scrypt and encrypted-SSH files this prompts for a
-/// passphrase with the retry/skip/cancel semantics from DESIGN.md §7; the
+/// passphrase with the retry/skip/cancel semantics from docs/DESIGN.md §7; the
 /// daemon only ever receives unencrypted identity material (age native,
 /// unencrypted SSH PEM, or the unlocked inner of a scrypt blob).
 fn build_identity_data(path: &Path) -> Result<AddOutcome, RspassError> {

@@ -1,7 +1,7 @@
 //! JSON-line wire protocol for the rspass agent daemon.
 //!
 //! One request per line, one response per line, UTF-8. Fields follow
-//! DESIGN.md §8.
+//! docs/DESIGN.md §8.
 //!
 //! ```jsonc
 //! {"op": "add", "path": "/abs/path", "identity_data": "AGE-SECRET-KEY-1..."}
@@ -19,7 +19,7 @@ use std::io::{BufRead, Write};
 use serde::{Deserialize, Serialize};
 
 /// Upper bound on the base64-encoded ciphertext accepted by `decrypt`.
-/// DESIGN.md §8: "daemon 也对 ciphertext 设大小上限（默认 16 MiB）".
+/// docs/DESIGN.md §8: "daemon 也对 ciphertext 设大小上限（默认 16 MiB）".
 /// Applied to the *decoded* byte length.
 pub const MAX_CIPHERTEXT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -43,7 +43,7 @@ pub enum Request {
         /// Base64-encoded age ciphertext.
         ciphertext: String,
         /// Optional secret path label for the agent log. Never validated;
-        /// the safety model does not depend on it (DESIGN.md §8).
+        /// the safety model does not depend on it (docs/DESIGN.md §8).
         #[serde(default)]
         context: Option<String>,
     },

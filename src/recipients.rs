@@ -27,7 +27,7 @@ pub enum RecipientError {
 /// Walk up from `parent(target)` to `store_root` inclusive, and return the
 /// parsed recipients from the first `.age-recipients` file found.
 ///
-/// Per DESIGN.md section 6 this is **override-not-inherit**: the first file
+/// Per docs/DESIGN.md section 6 this is **override-not-inherit**: the first file
 /// found along the walk wins; parent files are not merged in. Directories
 /// that want the parent's recipients simply don't create a local file.
 ///

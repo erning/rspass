@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// Top-level error type for the rspass CLI.
 ///
-/// Each variant maps to a DESIGN.md §11 exit code via [`RspassError::exit_code`].
+/// Each variant maps to a docs/DESIGN.md §11 exit code via [`RspassError::exit_code`].
 /// `anyhow` is used internally for contextual wrapping but never surfaces
 /// directly at the CLI boundary.
 #[derive(Debug, Error)]
@@ -36,7 +36,7 @@ pub enum RspassError {
 }
 
 impl RspassError {
-    /// Map the error to its DESIGN.md §11 exit code.
+    /// Map the error to its docs/DESIGN.md §11 exit code.
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Crypto(crate::crypto::CryptoError::NoMatchingIdentity) => 2,

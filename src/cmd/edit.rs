@@ -15,7 +15,7 @@ use crate::path::{self, Resolved};
 use crate::recipients;
 
 /// `rspass edit <PATH>`: decrypt-or-empty, spawn $EDITOR on a tempfile, and
-/// re-encrypt on save. Follows DESIGN.md §9.2 exactly:
+/// re-encrypt on save. Follows docs/DESIGN.md §9.2 exactly:
 ///
 /// - `$EDITOR` → `$VISUAL` → `vi` fallback
 /// - tempfile named after the secret's basename (preserves extension for
