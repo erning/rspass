@@ -22,7 +22,10 @@ pub enum Loaded {
     Plaintext(Vec<BoxIdentity>),
     /// The file is scrypt-protected and requires a passphrase to unlock via
     /// the tty prompt.
-    Scrypt { path: PathBuf },
+    Scrypt {
+        #[allow(dead_code)]
+        path: PathBuf,
+    },
 }
 
 /// File-level classification used by both the CLI-side `load` and the

@@ -32,13 +32,13 @@ use crate::recipients;
 /// cleaned up (best-effort; not a secure wipe).
 pub fn run(config: &Config, input: &str) -> Result<(), RspassError> {
     let resolved = path::resolve(config, input)?;
+    let store_root = fs::canonicalize(&resolved.store_root).map_err(RspassError::Io)?;
 
     // Step 1: load existing plaintext or start empty.
-    let existing = load_existing(config, &resolved, input)?;
+    let existing = load_existing(config, &resolved, input, &store_root)?;
 
     // Step 2: resolve recipients via walk-up from parent(target). Canonicalize
     // the store root so the walk can defensively reject escapes.
-    let store_root = fs::canonicalize(&resolved.store_root).map_err(RspassError::Io)?;
     let recipients = recipients::load_for(&resolved.age_file, &store_root)?;
 
     // Step 3: write the plaintext to a tempfile inside a 0700 TempDir.
@@ -103,12 +103,20 @@ fn load_existing(
     config: &Config,
     resolved: &Resolved,
     input: &str,
+    store_root: &Path,
 ) -> Result<Zeroizing<Vec<u8>>, RspassError> {
-    match fs::read(&resolved.age_file) {
-        Ok(ct) => decrypt::with_identities_and_prompts(config, &ct, Some(input)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Zeroizing::new(Vec::new())),
-        Err(e) => Err(RspassError::Io(e)),
+    let age_file = match fs::canonicalize(&resolved.age_file) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Zeroizing::new(Vec::new()));
+        }
+        Err(e) => return Err(RspassError::Io(e)),
+    };
+    if !age_file.starts_with(store_root) {
+        return Err(RspassError::PathEscape(resolved.age_file.clone()));
     }
+    let ct = fs::read(&age_file)?;
+    decrypt::with_identities_and_prompts(config, &ct, Some(input))
 }
 
 fn write_with_mode_0600(path: &Path, contents: &[u8]) -> std::io::Result<()> {

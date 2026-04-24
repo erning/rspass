@@ -17,7 +17,7 @@ use base64::Engine;
 use zeroize::Zeroizing;
 
 use crate::agent::proto::{MAX_CIPHERTEXT_BYTES, Request, Response, read_request, write_response};
-use crate::agent::socket::{self, SocketError, peer_uid, self_uid};
+use crate::agent::socket::{self, SocketError, SocketPathSource, peer_uid, self_uid};
 use crate::identity::BoxIdentity;
 
 struct IdentityEntry {
@@ -42,8 +42,9 @@ impl Agent {
 /// Step 6 runs in the foreground; step 7's spawn helper will detach (fork,
 /// setsid, close stdio) before calling into this function.
 pub fn run() -> Result<(), RunError> {
-    let socket_path = socket::socket_path()?;
-    ensure_parent_dir(&socket_path)?;
+    let socket_path = socket::socket_path_with_source()?;
+    ensure_parent_dir(&socket_path.path, socket_path.source)?;
+    let socket_path = socket_path.path;
 
     // Idempotent start: if a live daemon is already listening, exit 0.
     if is_alive(&socket_path) {
@@ -57,7 +58,7 @@ pub fn run() -> Result<(), RunError> {
 
     let listener = UnixListener::bind(&socket_path).map_err(RunError::Bind)?;
     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
-        .map_err(RunError::Bind)?;
+        .map_err(RunError::SetSocketPermissions)?;
     tracing::info!("agent listening at {}", socket_path.display());
 
     let mut agent = Agent::new();
@@ -97,15 +98,29 @@ fn verify_peer(stream: &UnixStream, expected_uid: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_parent_dir(socket_path: &Path) -> Result<(), RunError> {
+fn ensure_parent_dir(socket_path: &Path, source: SocketPathSource) -> Result<(), RunError> {
     let parent = socket_path.parent().ok_or(RunError::NoParentDir)?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
     builder.create(parent).map_err(RunError::CreateDir)?;
-    // Re-apply 0700 in case the dir pre-existed with looser permissions.
-    let perm = std::fs::Permissions::from_mode(0o700);
-    std::fs::set_permissions(parent, perm).map_err(RunError::CreateDir)?;
+    if source != SocketPathSource::Explicit || owner_only(parent)? {
+        // Re-apply 0700 for rspass-owned runtime directories. For an explicit
+        // RSPASS_AGENT_SOCK parent, only touch already-private directories;
+        // never chmod a shared user-provided directory such as /tmp or a
+        // project checkout.
+        let perm = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(parent, perm).map_err(RunError::CreateDir)?;
+    }
     Ok(())
+}
+
+fn owner_only(path: &Path) -> Result<bool, RunError> {
+    let mode = std::fs::metadata(path)
+        .map_err(RunError::CreateDir)?
+        .permissions()
+        .mode()
+        & 0o777;
+    Ok(mode & 0o077 == 0)
 }
 
 fn is_alive(socket_path: &Path) -> bool {
@@ -344,4 +359,37 @@ pub enum RunError {
     CreateDir(#[source] std::io::Error),
     #[error("failed to bind socket: {0}")]
     Bind(#[source] std::io::Error),
+    #[error("failed to set socket permissions: {0}")]
+    SetSocketPermissions(#[source] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    #[test]
+    fn explicit_socket_parent_permissions_are_not_changed() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("custom");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_parent_dir(&parent.join("agent.sock"), SocketPathSource::Explicit).unwrap();
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn default_socket_parent_is_locked_down() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("rspass");
+
+        ensure_parent_dir(&parent.join("agent.sock"), SocketPathSource::RuntimeDir).unwrap();
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
 }

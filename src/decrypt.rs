@@ -6,10 +6,8 @@
 //!    - `no_matching_identity` or any transport error → fall through.
 //!    - Failures here **never** trigger exit 4: `show` / `edit` treat the
 //!      agent as an optimization, not a requirement (docs/DESIGN.md §11).
-//! 2. Plaintext identities from `config.identities` (no prompt).
-//! 3. scrypt / encrypted SSH identities from `config.identities`, skipping
-//!    any whose file path is already loaded in the agent (dedup based on the
-//!    agent's `list` snapshot). Prompt semantics:
+//! 2. Local identities from `config.identities`, in order. Agent-loaded paths
+//!    are skipped for prompt-bearing identities. Prompt semantics:
 //!    - empty input → skip to the next identity
 //!    - EOF (Ctrl+D) → `RspassError::PassphraseCancelled` → exit 3
 //!    - wrong passphrase → "wrong passphrase, skipping <path>" then continue
@@ -25,7 +23,7 @@ use crate::agent::proto::Request;
 use crate::config::{self, Config};
 use crate::crypto::{self, CryptoError};
 use crate::error::RspassError;
-use crate::identity::{self, BoxIdentity, IdentityError, Loaded};
+use crate::identity::{self, IdentityError, Kind, Loaded};
 use crate::tty::{self, TtyError};
 
 pub fn with_identities_and_prompts(
@@ -42,45 +40,93 @@ pub fn with_identities_and_prompts(
     //    re-prompt for their passphrases in the local fallback.
     let agent_paths = fetch_agent_paths();
 
-    // 3. Local fallback.
-    let (mut plaintext_ids, scrypt_paths) = classify_identities(config);
-    let scrypt_paths: Vec<PathBuf> = scrypt_paths
-        .into_iter()
-        .filter(|p| !agent_paths.contains(p))
-        .collect();
-
-    if !plaintext_ids.is_empty() {
-        match crypto::decrypt(ciphertext, &plaintext_ids) {
-            Ok(pt) => return Ok(pt),
-            Err(CryptoError::NoMatchingIdentity) => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    for path in scrypt_paths {
-        let label = format!("Passphrase for {}", path.display());
-        let passphrase = match tty::prompt_passphrase(&label) {
-            Ok(p) => p,
-            Err(TtyError::Cancelled) => return Err(RspassError::PassphraseCancelled),
-            Err(TtyError::Io(e)) => return Err(RspassError::Io(e)),
+    // 3. Local fallback, preserving config order so prompt behaviour remains
+    // predictable when multiple encrypted identities are configured.
+    for id_ref in &config.identities {
+        let path = match config::expand_path(id_ref) {
+            Ok(s) => PathBuf::from(s),
+            Err(e) => {
+                tracing::warn!("skipping identity {id_ref:?}: path expansion failed: {e}");
+                continue;
+            }
         };
-        if passphrase.is_empty() {
-            continue;
-        }
-        match identity::unlock_scrypt(&path, passphrase.as_str()) {
-            Ok(new_ids) => {
-                plaintext_ids.extend(new_ids);
-                match crypto::decrypt(ciphertext, &plaintext_ids) {
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!("skipping identity {id_ref:?}: {e}");
+                continue;
+            }
+            Err(e) => return Err(RspassError::Io(e)),
+        };
+
+        match identity::classify(&data) {
+            Kind::Scrypt => {
+                if agent_paths.contains(&path) {
+                    continue;
+                }
+                let label = format!("Passphrase for {}", path.display());
+                let passphrase = match tty::prompt_passphrase(&label) {
+                    Ok(p) => p,
+                    Err(TtyError::Cancelled) => return Err(RspassError::PassphraseCancelled),
+                    Err(TtyError::Io(e)) => return Err(RspassError::Io(e)),
+                };
+                if passphrase.is_empty() {
+                    continue;
+                }
+                match identity::unlock_scrypt(&path, passphrase.as_str()) {
+                    Ok(ids) => match crypto::decrypt(ciphertext, &ids) {
+                        Ok(pt) => return Ok(pt),
+                        Err(CryptoError::NoMatchingIdentity) => continue,
+                        Err(e) => return Err(e.into()),
+                    },
+                    Err(IdentityError::WrongPassphrase(p)) => {
+                        eprintln!("rspass: wrong passphrase, skipping {}", p.display());
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Kind::Ssh => {
+                let encrypted = ssh_key::PrivateKey::from_openssh(&data)
+                    .map(|k| k.is_encrypted())
+                    .unwrap_or(false);
+                if encrypted && agent_paths.contains(&path) {
+                    continue;
+                }
+                let ids = match identity::load(&path) {
+                    Ok(Loaded::Plaintext(ids)) => ids,
+                    Ok(Loaded::Scrypt { .. }) => unreachable!("classified as SSH"),
+                    Err(e) => {
+                        tracing::warn!("skipping identity {id_ref:?}: {e}");
+                        continue;
+                    }
+                };
+                match crypto::decrypt(ciphertext, &ids) {
+                    Ok(pt) => return Ok(pt),
+                    Err(CryptoError::NoMatchingIdentity) => continue,
+                    Err(e) if encrypted => {
+                        eprintln!("rspass: wrong passphrase, skipping {}", path.display());
+                        tracing::debug!("encrypted SSH identity failed: {e}");
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Kind::Native => {
+                let ids = match identity::load(&path) {
+                    Ok(Loaded::Plaintext(ids)) => ids,
+                    Ok(Loaded::Scrypt { .. }) => unreachable!("classified as native"),
+                    Err(e) => {
+                        tracing::warn!("skipping identity {id_ref:?}: {e}");
+                        continue;
+                    }
+                };
+                match crypto::decrypt(ciphertext, &ids) {
                     Ok(pt) => return Ok(pt),
                     Err(CryptoError::NoMatchingIdentity) => continue,
                     Err(e) => return Err(e.into()),
                 }
             }
-            Err(IdentityError::WrongPassphrase(p)) => {
-                eprintln!("rspass: wrong passphrase, skipping {}", p.display());
-                continue;
-            }
-            Err(e) => return Err(e.into()),
         }
     }
 
@@ -146,32 +192,4 @@ fn fetch_agent_paths() -> HashSet<PathBuf> {
         .iter()
         .filter_map(|e| e.get("path").and_then(|v| v.as_str()).map(PathBuf::from))
         .collect()
-}
-
-/// Walk `config.identities` once, splitting into a plaintext identity pool
-/// and a list of scrypt-protected files whose unlocking is deferred to a
-/// passphrase prompt. Malformed entries are logged at warn and skipped.
-fn classify_identities(config: &Config) -> (Vec<BoxIdentity>, Vec<PathBuf>) {
-    let mut plaintext: Vec<BoxIdentity> = Vec::new();
-    let mut scrypt_paths: Vec<PathBuf> = Vec::new();
-    for id_ref in &config.identities {
-        let expanded = match config::expand_path(id_ref) {
-            Ok(s) => PathBuf::from(s),
-            Err(e) => {
-                tracing::warn!("skipping identity {id_ref:?}: path expansion failed: {e}");
-                continue;
-            }
-        };
-        match identity::load(&expanded) {
-            Ok(Loaded::Plaintext(mut ids)) => plaintext.append(&mut ids),
-            Ok(Loaded::Scrypt { path }) => scrypt_paths.push(path),
-            Err(e @ IdentityError::Open(..)) => {
-                tracing::debug!("skipping identity {id_ref:?}: {e}");
-            }
-            Err(e) => {
-                tracing::warn!("skipping identity {id_ref:?}: {e}");
-            }
-        }
-    }
-    (plaintext, scrypt_paths)
 }

@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-`docs/DESIGN.md` is the canonical spec. Implementation lives in `src/`, following the module layout in `docs/DESIGN.md` §12. `README.md` is the public-facing intro.
+`docs/DESIGN.md` is the canonical spec. This repository has a Rust implementation in `src/`, integration tests in `tests/`, release automation in `.github/`, and public-facing docs in `README.md` / `docs/RELEASING.md`.
 
 ## Non-negotiable design decisions
 
 The following were locked in during earlier design discussion. Do not reopen or quietly diverge from them without explicit user direction:
 
 - **Use the `age` crate, not a subprocess.** Static-link with features `ssh` + `armor`. Never shell out to an `age` CLI binary.
-- **v1 command surface is exactly** `show`, `edit`, `agent {start,stop,status,ls,add,rm}`. No `init`, no clipboard, no `ls` / `find` / `rm` / `mv` / `cp`, no `--no-agent` / `--identity` flags, no `RSPASS_PASSPHRASE` env.
+- **v1 command surface is exactly** `show`, `edit`, `list` (alias `ls`), `config`, `agent {start,stop,status,list,add,remove}` with `agent ls` / `agent rm` aliases. No `init`, no clipboard, no `find` / top-level `rm` / `mv` / `cp`, no `--no-agent` / `--identity` flags, no `RSPASS_PASSPHRASE` env.
 - **Agent is opt-in.** `show` / `edit` never auto-start the daemon. Only `agent start` and `agent add` may spawn it.
 - **Agent decrypts inside the daemon.** Wire protocol is `decrypt(ciphertext, context)` → `plaintext`; identities never leave the daemon. `agent add` is the sole entry point.
 - **No TTL, no idle eviction.** Identities stay in the agent until explicit `agent stop` / `agent rm`.

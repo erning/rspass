@@ -22,25 +22,51 @@ pub enum SocketError {
 }
 
 pub fn socket_path() -> Result<PathBuf, SocketError> {
+    Ok(socket_path_with_source()?.path)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketPathSource {
+    Explicit,
+    RuntimeDir,
+    TmpDir,
+}
+
+#[derive(Debug)]
+pub struct SocketPath {
+    pub path: PathBuf,
+    pub source: SocketPathSource,
+}
+
+pub fn socket_path_with_source() -> Result<SocketPath, SocketError> {
     resolve(nonempty, self_uid)
 }
 
-fn resolve<F, G>(lookup: F, uid: G) -> Result<PathBuf, SocketError>
+fn resolve<F, G>(lookup: F, uid: G) -> Result<SocketPath, SocketError>
 where
     F: Fn(&str) -> Option<String>,
     G: FnOnce() -> u32,
 {
     if let Some(explicit) = lookup("RSPASS_AGENT_SOCK") {
-        return Ok(PathBuf::from(explicit));
+        return Ok(SocketPath {
+            path: PathBuf::from(explicit),
+            source: SocketPathSource::Explicit,
+        });
     }
     if let Some(xdg) = lookup("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(xdg).join("rspass").join("agent.sock"));
+        return Ok(SocketPath {
+            path: PathBuf::from(xdg).join("rspass").join("agent.sock"),
+            source: SocketPathSource::RuntimeDir,
+        });
     }
     if let Some(tmp) = lookup("TMPDIR") {
         let uid = uid();
-        return Ok(PathBuf::from(tmp)
-            .join(format!("rspass-agent.{uid}"))
-            .join("agent.sock"));
+        return Ok(SocketPath {
+            path: PathBuf::from(tmp)
+                .join(format!("rspass-agent.{uid}"))
+                .join("agent.sock"),
+            source: SocketPathSource::TmpDir,
+        });
     }
     Err(SocketError::NoPath)
 }
@@ -118,7 +144,11 @@ mod tests {
     #[test]
     fn tmpdir_fallback_when_only_tmpdir_set() {
         let p = resolve(env_from(&[("TMPDIR", "/tmp-test")]), || 1234).unwrap();
-        assert_eq!(p, PathBuf::from("/tmp-test/rspass-agent.1234/agent.sock"));
+        assert_eq!(
+            p.path,
+            PathBuf::from("/tmp-test/rspass-agent.1234/agent.sock")
+        );
+        assert_eq!(p.source, SocketPathSource::TmpDir);
     }
 
     #[test]
@@ -131,7 +161,8 @@ mod tests {
             || 1234,
         )
         .unwrap();
-        assert_eq!(p, PathBuf::from("/run/user/1000/rspass/agent.sock"));
+        assert_eq!(p.path, PathBuf::from("/run/user/1000/rspass/agent.sock"));
+        assert_eq!(p.source, SocketPathSource::RuntimeDir);
     }
 
     #[test]
@@ -145,7 +176,8 @@ mod tests {
             || 1234,
         )
         .unwrap();
-        assert_eq!(p, PathBuf::from("/tmp/custom.sock"));
+        assert_eq!(p.path, PathBuf::from("/tmp/custom.sock"));
+        assert_eq!(p.source, SocketPathSource::Explicit);
     }
 
     #[test]
@@ -158,7 +190,8 @@ mod tests {
             || 1234,
         )
         .unwrap();
-        assert_eq!(p, PathBuf::from("/run/user/1000/rspass/agent.sock"));
+        assert_eq!(p.path, PathBuf::from("/run/user/1000/rspass/agent.sock"));
+        assert_eq!(p.source, SocketPathSource::RuntimeDir);
     }
 
     #[test]

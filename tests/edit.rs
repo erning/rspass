@@ -4,6 +4,7 @@
 //! The editor is mocked via a small shell script that either writes known
 //! bytes to `$1` (simulating "user typed and saved") or exits non-zero.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -199,4 +200,47 @@ fn edit_editor_nonzero_exit_preserves_tempfile() {
     );
     // The .age file must not have been created.
     assert!(!scratch.vault.join("api/bad.age").exists());
+}
+
+#[test]
+fn edit_rejects_existing_secret_reached_through_symlink_escape_before_editor() {
+    let (scratch, identity) = setup();
+    let scratch_dir = scratch.xdg_config_home.parent().unwrap().to_path_buf();
+    let outside = scratch_dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    encrypt_to_file(&outside.join("secret.age"), &identity, b"outside\n");
+    std::os::unix::fs::symlink(&outside, scratch.vault.join("link")).unwrap();
+
+    let marker = scratch_dir.join("editor-ran");
+    let script = scratch_dir.join("marker-editor.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ntouch {}\nprintf changed > \"$1\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = run_rspass(&scratch, &script, &["edit", "link/secret"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("escaped store root"),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!marker.exists(), "editor should not have been launched");
+}
+
+fn encrypt_to_file(path: &std::path::Path, identity: &age::x25519::Identity, plaintext: &[u8]) {
+    let pubkey = identity.to_public();
+    let r: &dyn age::Recipient = &pubkey;
+    let encryptor = age::Encryptor::with_recipients(std::iter::once(r)).unwrap();
+    let mut ct = Vec::new();
+    let mut writer = encryptor.wrap_output(&mut ct).unwrap();
+    writer.write_all(plaintext).unwrap();
+    writer.finish().unwrap();
+    std::fs::write(path, ct).unwrap();
 }
