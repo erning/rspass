@@ -1,4 +1,4 @@
-//! `rspass agent {start,stop,status,ls,add,rm}`.
+//! `rspass agent {start,stop,status,list,add,remove}`.
 //!
 //! Each subcommand is a thin wrapper over the `agent::client` + `agent::spawn`
 //! modules plus one helper for bundling identity data to send over the
@@ -27,7 +27,8 @@ pub enum Op {
     /// Report whether the agent is running and how many identities it holds.
     Status,
     /// List loaded identity files and their public keys.
-    Ls,
+    #[command(visible_alias = "ls")]
+    List,
     /// Add an identity. `PATH` may be omitted to load all configured
     /// identities in sequence.
     Add {
@@ -37,7 +38,8 @@ pub enum Op {
         force: bool,
     },
     /// Remove an identity by file path.
-    Rm { path: String },
+    #[command(visible_alias = "rm")]
+    Remove { path: String },
 }
 
 pub fn run(config: &Config, op: Op) -> Result<(), RspassError> {
@@ -45,13 +47,13 @@ pub fn run(config: &Config, op: Op) -> Result<(), RspassError> {
         Op::Start => start(),
         Op::Stop => stop(),
         Op::Status => status(),
-        Op::Ls => ls(),
+        Op::List => ls(),
         Op::Add {
             path: Some(p),
             force,
         } => add_one(&p, force),
         Op::Add { path: None, force } => add_all(config, force),
-        Op::Rm { path } => rm(&path),
+        Op::Remove { path } => rm(&path),
     }
 }
 
