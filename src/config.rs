@@ -35,6 +35,8 @@ pub enum ConfigError {
     IncludeGlob(String, #[source] glob::PatternError),
     #[error("nested include is not allowed in {0}")]
     NestedInclude(PathBuf),
+    #[error("failed to expand path {1:?} in {0}: {2}")]
+    PathExpand(PathBuf, String, #[source] ExpansionError),
 }
 
 #[derive(Debug, Error)]
@@ -96,14 +98,76 @@ fn load_raw(path: &Path) -> Result<Config, ConfigError> {
         }
         Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
     };
-    let cfg: Config =
+    let mut cfg: Config =
         serde_yaml_ng::from_slice(&bytes).map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?;
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for value in cfg.mounts.values_mut() {
+        *value = anchor_path(value, base_dir, path)?;
+    }
+    for id in &mut cfg.identities {
+        *id = anchor_path(id, base_dir, path)?;
+    }
     for key in cfg.mounts.keys() {
         if let Err(msg) = validate_mount_key(key) {
             return Err(ConfigError::InvalidMount(key.clone(), msg));
         }
     }
     Ok(cfg)
+}
+
+/// Resolve a `mounts` value or `identities` entry: first run `expand_path`
+/// (`~`, `${VAR}`, escapes per §5), then anchor any still-relative result to
+/// `base_dir` — the directory of the config file the value was declared in.
+/// This gives `include:`-loaded files file-local path semantics, matching how
+/// `include:` itself resolves entries against the main config's directory.
+/// The result is also lexically normalized so `conf.d/../stores/ai` collapses
+/// to `stores/ai`.
+fn anchor_path(value: &str, base_dir: &Path, source: &Path) -> Result<String, ConfigError> {
+    let expanded = expand_path(value)
+        .map_err(|e| ConfigError::PathExpand(source.to_path_buf(), value.to_string(), e))?;
+    let p = Path::new(&expanded);
+    let joined = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
+    };
+    Ok(normalize_path(&joined).to_string_lossy().into_owned())
+}
+
+/// Lexically collapse `.` and `..` components without touching the filesystem.
+/// Symlinks are *not* followed — that would require the path to exist and is
+/// the wrong semantics for mount targets that may be created later.
+///
+/// Behaves like Go's `filepath.Clean`: `a/./b` → `a/b`, `a/b/../c` → `a/c`,
+/// `..` at the root is dropped (`/..` → `/`), trailing `..` on a relative
+/// path is preserved (`..` → `..`, `a/../..` → `..`).
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {
+                    // Can't ascend above the root; drop the `..`.
+                }
+                Some(Component::ParentDir) | None => {
+                    // Start of a relative path or already-accumulated `..`s;
+                    // keep stacking so `../foo` stays `../foo`.
+                    out.push("..");
+                }
+                Some(Component::CurDir) => unreachable!("CurDir filtered above"),
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
 }
 
 fn resolve_include_entry(entry: &str, base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
@@ -610,6 +674,133 @@ identities:
             let yaml = "include:\n  - a.yaml\nmounts: {}\n";
             let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
             assert_eq!(cfg.include, vec!["a.yaml"]);
+        }
+    }
+
+    mod relative_paths {
+        use super::*;
+        use tempfile::tempdir;
+
+        fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
+            let p = dir.join(name);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, content).unwrap();
+            p
+        }
+
+        #[test]
+        fn relative_mount_anchors_to_config_dir() {
+            let dir = tempdir().unwrap();
+            let main = write(dir.path(), "config.yaml", "mounts:\n  work: store/work\n");
+            let cfg = Config::load_from(&main).unwrap();
+            let expected = dir.path().join("store/work").to_string_lossy().into_owned();
+            assert_eq!(cfg.mounts.get("work"), Some(&expected));
+        }
+
+        #[test]
+        fn relative_identity_anchors_to_config_dir() {
+            let dir = tempdir().unwrap();
+            let main = write(dir.path(), "config.yaml", "identities:\n  - keys/id.txt\n");
+            let cfg = Config::load_from(&main).unwrap();
+            let expected = dir
+                .path()
+                .join("keys/id.txt")
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(cfg.identities, vec![expected]);
+        }
+
+        #[test]
+        fn absolute_paths_are_unchanged() {
+            let dir = tempdir().unwrap();
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "mounts:\n  work: /abs/store\nidentities:\n  - /abs/id.txt\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("work"), Some(&"/abs/store".to_string()));
+            assert_eq!(cfg.identities, vec!["/abs/id.txt".to_string()]);
+        }
+
+        #[test]
+        fn tilde_expansion_still_yields_absolute() {
+            // Skip if HOME isn't set (unlikely in tests but be safe).
+            let Some(home) = dirs::home_dir() else {
+                return;
+            };
+            let dir = tempdir().unwrap();
+            let main = write(dir.path(), "config.yaml", "mounts:\n  w: ~/work\n");
+            let cfg = Config::load_from(&main).unwrap();
+            let expected = home.join("work").to_string_lossy().into_owned();
+            assert_eq!(cfg.mounts.get("w"), Some(&expected));
+        }
+
+        #[test]
+        fn parent_dir_segments_are_collapsed() {
+            // The original ask: a config at .../conf.d/foo.yaml referencing
+            // ../stores/ai should land at .../stores/ai with no `..` left
+            // in the resolved path.
+            let dir = tempdir().unwrap();
+            write(
+                dir.path(),
+                "conf.d/work.yaml",
+                "mounts:\n  ai: ../stores/ai\n",
+            );
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - conf.d/work.yaml\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            let resolved = cfg.mounts.get("ai").expect("ai mount");
+            assert!(
+                !resolved.contains("/.."),
+                "expected normalized path, got {resolved}"
+            );
+            assert!(resolved.ends_with("/stores/ai"), "got {resolved}");
+        }
+
+        #[test]
+        fn absolute_paths_with_dots_are_normalized() {
+            let dir = tempdir().unwrap();
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "mounts:\n  m: /abs/./store/../canonical\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("m"), Some(&"/abs/canonical".to_string()));
+        }
+
+        #[test]
+        fn included_file_anchors_to_its_own_dir_not_main_dir() {
+            // Main config in dir/, included file in dir/sub/. The included
+            // file's relative `mounts` value must resolve under dir/sub, not
+            // under dir/, even though the load was kicked off from dir/.
+            //
+            // load_from canonicalizes the included file's path before
+            // load_raw runs, so on macOS the anchor is `/private/var/...`
+            // even though the tempdir reports `/var/...`. Compare against
+            // the canonical form to keep the test portable.
+            let dir = tempdir().unwrap();
+            let extra = write(
+                dir.path(),
+                "sub/extra.yaml",
+                "mounts:\n  team: store/team\n",
+            );
+            let main = write(dir.path(), "config.yaml", "include:\n  - sub/extra.yaml\n");
+            let cfg = Config::load_from(&main).unwrap();
+            let expected = fs::canonicalize(&extra)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("store/team")
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(cfg.mounts.get("team"), Some(&expected));
         }
     }
 }

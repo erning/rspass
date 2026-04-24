@@ -270,6 +270,8 @@ identities:
 展开顺序：
 1. 先由 YAML parser 得到字符串
 2. rspass 再做 path expansion
+3. **`mounts` value / `identities` item**：展开后若仍是相对路径，锚在**声明它的 config 文件所在目录**（与 `include` 同样的 anchor 语义；被 `include:` 加载的文件锚到自身所在目录，不是主 config 所在目录）。绝对路径或 `~` / `${VAR}` 展开后已是绝对路径的不变。
+4. 第 3 步的结果做一次**词法标准化**（不访问文件系统、不跟随 symlink）：折叠中间的 `.` 与 `..`，例如 `conf.d/../stores/ai` → `stores/ai`。`/..` 在根目录被丢弃；相对路径开头的 `..` 保留。
 
 支持：
 - 开头的 `~` 和 `~/`
