@@ -5,6 +5,7 @@
 //! protocol. The no-arg `add` case implements DESIGN.md §8 "agent add (无参)
 //! 流程" with per-identity summaries and graceful skip/cancel semantics.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
@@ -29,7 +30,12 @@ pub enum Op {
     Ls,
     /// Add an identity. `PATH` may be omitted to load all configured
     /// identities in sequence.
-    Add { path: Option<String> },
+    Add {
+        path: Option<String>,
+        /// Replace an already-loaded identity instead of skipping it.
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Remove an identity by file path.
     Rm { path: String },
 }
@@ -40,8 +46,11 @@ pub fn run(config: &Config, op: Op) -> Result<(), RspassError> {
         Op::Stop => stop(),
         Op::Status => status(),
         Op::Ls => ls(),
-        Op::Add { path: Some(p) } => add_one(&p),
-        Op::Add { path: None } => add_all(config),
+        Op::Add {
+            path: Some(p),
+            force,
+        } => add_one(&p, force),
+        Op::Add { path: None, force } => add_all(config, force),
         Op::Rm { path } => rm(&path),
     }
 }
@@ -138,9 +147,14 @@ fn ls() -> Result<(), RspassError> {
     }
 }
 
-fn add_one(path: &str) -> Result<(), RspassError> {
+fn add_one(path: &str, force: bool) -> Result<(), RspassError> {
     spawn::ensure_running().map_err(|e| RspassError::Agent(e.to_string()))?;
-    let abs = absolute_path(path)?;
+    let abs = canonicalize_path(path)?;
+    let was_loaded = list_loaded_paths()?.contains(&abs);
+    if was_loaded && !force {
+        println!("rspass: already loaded {}", abs.display());
+        return Ok(());
+    }
     let identity_data = match build_identity_data(&abs)? {
         AddOutcome::Ready(data) => data,
         AddOutcome::Skipped => {
@@ -149,25 +163,31 @@ fn add_one(path: &str) -> Result<(), RspassError> {
         }
     };
     send_add(&abs, &identity_data)?;
+    if was_loaded {
+        println!("rspass: replaced {}", abs.display());
+    }
     Ok(())
 }
 
-fn add_all(config: &Config) -> Result<(), RspassError> {
+fn add_all(config: &Config, force: bool) -> Result<(), RspassError> {
     spawn::ensure_running().map_err(|e| RspassError::Agent(e.to_string()))?;
     let total = config.identities.len();
     if total == 0 {
         eprintln!("rspass: no identities configured");
         return Ok(());
     }
+    let mut loaded_paths = list_loaded_paths()?;
     println!("Loading {total} identities from config...");
     let mut loaded = 0;
+    let mut replaced = 0;
+    let mut already = 0;
     let mut skipped = 0;
     let mut failed = 0;
     for (i, id_ref) in config.identities.iter().enumerate() {
         let idx = i + 1;
         let abs = match config::expand_path(id_ref)
             .map_err(RspassError::from)
-            .and_then(|s| absolute_path(&s))
+            .and_then(|s| canonicalize_path(&s))
         {
             Ok(p) => p,
             Err(e) => {
@@ -176,10 +196,25 @@ fn add_all(config: &Config) -> Result<(), RspassError> {
                 continue;
             }
         };
+        let was_loaded = loaded_paths.contains(&abs);
+        if was_loaded && !force {
+            println!("[{idx}/{total}] {} (already loaded)", abs.display());
+            already += 1;
+            continue;
+        }
         println!("[{idx}/{total}] {}", abs.display());
         match build_identity_data(&abs) {
             Ok(AddOutcome::Ready(data)) => match send_add(&abs, &data) {
-                Ok(()) => loaded += 1,
+                Ok(()) => {
+                    loaded += 1;
+                    if was_loaded {
+                        replaced += 1;
+                        println!("  replaced");
+                    }
+                    // Track within this run so a config that lists the same
+                    // file twice doesn't double-prompt.
+                    loaded_paths.insert(abs);
+                }
                 Err(e) => {
                     eprintln!("  {e}");
                     failed += 1;
@@ -196,17 +231,42 @@ fn add_all(config: &Config) -> Result<(), RspassError> {
             }
         }
     }
-    println!("loaded {loaded}/{total} (skipped {skipped}, failed {failed})");
-    if loaded == 0 {
-        return Err(RspassError::Agent(
-            "no identities loaded".into(),
-        ));
+    println!(
+        "loaded {loaded}/{total} (replaced {replaced}, already loaded {already}, \
+         skipped {skipped}, failed {failed})"
+    );
+    if loaded == 0 && already == 0 {
+        return Err(RspassError::Agent("no identities loaded".into()));
     }
     Ok(())
 }
 
+/// Query the daemon's current identity set. Returned as a set of paths so
+/// callers can cheaply check membership without iterating JSON.
+fn list_loaded_paths() -> Result<HashSet<PathBuf>, RspassError> {
+    let mut c = Client::connect().map_err(agent_err)?;
+    let resp = c.request(&Request::List).map_err(agent_err)?;
+    if !resp.ok {
+        return Err(RspassError::Agent(
+            resp.error.unwrap_or_else(|| "list failed".into()),
+        ));
+    }
+    let entries = resp
+        .data
+        .as_ref()
+        .and_then(|d| d.get("identities"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(entries
+        .iter()
+        .filter_map(|e| e.get("path").and_then(|v| v.as_str()))
+        .map(PathBuf::from)
+        .collect())
+}
+
 fn rm(path: &str) -> Result<(), RspassError> {
-    let abs = absolute_path(path)?;
+    let abs = canonicalize_path(path)?;
     match Client::connect_existing() {
         None => {
             eprintln!("rspass: agent not running");
@@ -339,9 +399,16 @@ fn check_ok(resp: Response) -> Result<(), RspassError> {
     }
 }
 
-fn absolute_path(s: &str) -> Result<PathBuf, RspassError> {
+/// Resolve to a canonical absolute path. Symlinks are followed and the file
+/// must exist. If it doesn't (e.g., the user is removing an entry whose
+/// on-disk file has been deleted), fall back to a syntactic absolute path so
+/// `rm` can still match the daemon's stored key by string equality.
+fn canonicalize_path(s: &str) -> Result<PathBuf, RspassError> {
     let p = PathBuf::from(s);
-    std::path::absolute(&p).map_err(RspassError::Io)
+    match std::fs::canonicalize(&p) {
+        Ok(canon) => Ok(canon),
+        Err(_) => std::path::absolute(&p).map_err(RspassError::Io),
+    }
 }
 
 fn agent_err(e: ClientError) -> RspassError {
