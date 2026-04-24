@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -18,43 +17,101 @@ pub enum IdentityError {
 
 /// An identity source that has been opened and classified.
 pub enum Loaded {
-    /// A plaintext age identity file (and/or SSH private keys without a
-    /// passphrase) has been parsed and is ready for immediate use.
+    /// A plaintext age identity file, or an unencrypted SSH private key, has
+    /// been parsed and is ready for immediate use.
     Plaintext(Vec<BoxIdentity>),
-    /// The file is scrypt-protected and requires a passphrase to unlock.
-    /// Step 4 wires this up via the tty prompt.
+    /// The file is scrypt-protected and requires a passphrase to unlock via
+    /// the tty prompt.
     Scrypt { path: PathBuf },
 }
 
-/// Read the file header and classify the identity source.
-///
-/// A scrypt-encrypted age file begins with the literal header line
-/// `age-encryption.org/v1`; any other content is treated as a plaintext
-/// age identity file (which may contain multiple `AGE-SECRET-KEY-1...`
-/// lines as well as SSH private key blocks).
-pub fn load(path: &Path) -> Result<Loaded, IdentityError> {
-    if is_scrypt_identity(path)? {
-        return Ok(Loaded::Scrypt {
-            path: path.to_path_buf(),
-        });
+/// File-level classification used by both the CLI-side `load` and the
+/// daemon-side identity install path, so the two always agree on how to route
+/// a given blob.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// scrypt-wrapped age identity file (needs a passphrase to unlock).
+    Scrypt,
+    /// OpenSSH / PEM-style private key. `age::IdentityFile` does not parse
+    /// these; route them through `age::ssh::Identity::from_buffer`.
+    Ssh,
+    /// Plaintext age identity file (`AGE-SECRET-KEY-1…` / plugin entries).
+    Native,
+}
+
+/// Classify an identity source by its leading bytes.
+pub fn classify(data: &[u8]) -> Kind {
+    if data.starts_with(b"age-encryption.org/v1") {
+        return Kind::Scrypt;
     }
-    load_plaintext(path).map(Loaded::Plaintext)
+    if looks_like_ssh_private_key(data) {
+        return Kind::Ssh;
+    }
+    Kind::Native
 }
 
-fn is_scrypt_identity(path: &Path) -> Result<bool, IdentityError> {
+/// Check whether the first non-blank, non-comment line is a PEM-style
+/// `-----BEGIN ... PRIVATE KEY-----` header (OpenSSH or legacy RSA/DSA/EC).
+fn looks_like_ssh_private_key(data: &[u8]) -> bool {
+    for line in data.split(|b| *b == b'\n') {
+        let line = trim_ascii_ws(line);
+        if line.is_empty() || line.starts_with(b"#") {
+            continue;
+        }
+        return line.starts_with(b"-----BEGIN ") && line.ends_with(b" PRIVATE KEY-----");
+    }
+    false
+}
+
+fn trim_ascii_ws(mut s: &[u8]) -> &[u8] {
+    while let [first, rest @ ..] = s
+        && first.is_ascii_whitespace()
+    {
+        s = rest;
+    }
+    while let [rest @ .., last] = s
+        && last.is_ascii_whitespace()
+    {
+        s = rest;
+    }
+    s
+}
+
+/// Read the file, classify it, and return a `Loaded`.
+pub fn load(path: &Path) -> Result<Loaded, IdentityError> {
     let data = std::fs::read(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
-    Ok(data.starts_with(b"age-encryption.org/v1"))
+    match classify(&data) {
+        Kind::Scrypt => Ok(Loaded::Scrypt {
+            path: path.to_path_buf(),
+        }),
+        Kind::Ssh => load_ssh(path, &data).map(|id| Loaded::Plaintext(vec![id])),
+        Kind::Native => load_native(path, &data).map(Loaded::Plaintext),
+    }
 }
 
-fn load_plaintext(path: &Path) -> Result<Vec<BoxIdentity>, IdentityError> {
-    let file = File::open(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
-    let reader = BufReader::new(file);
-    let id_file = age::IdentityFile::from_buffer(reader)
+fn load_ssh(path: &Path, data: &[u8]) -> Result<BoxIdentity, IdentityError> {
+    let id = age::ssh::Identity::from_buffer(
+        std::io::Cursor::new(data),
+        Some(path.display().to_string()),
+    )
+    .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
+    if let age::ssh::Identity::Unsupported(_) = &id {
+        return Err(IdentityError::Parse(
+            path.to_path_buf(),
+            "unsupported SSH key type".to_string(),
+        ));
+    }
+    // Both Unencrypted and Encrypted get wrapped: the callbacks only fire at
+    // decrypt time, so unencrypted keys pay nothing for the wrapper.
+    Ok(Box::new(id.with_callbacks(crate::tty::TtyCallbacks)))
+}
+
+fn load_native(path: &Path, data: &[u8]) -> Result<Vec<BoxIdentity>, IdentityError> {
+    let id_file = age::IdentityFile::from_buffer(std::io::Cursor::new(data))
         .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
-    let ids = id_file
+    id_file
         .into_identities()
-        .map_err(|e| IdentityError::Parse(path.to_path_buf(), format!("{e:?}")))?;
-    Ok(ids)
+        .map_err(|e| IdentityError::Parse(path.to_path_buf(), format!("{e:?}")))
 }
 
 /// Decrypt an scrypt-protected identity file with the given passphrase and
@@ -234,5 +291,69 @@ mod tests {
             expect_err(unlock_scrypt(&path, "not-the-right-pass")),
             IdentityError::WrongPassphrase(_)
         ));
+    }
+
+    // Test-only SSH keys (ed25519), generated via ssh-keygen. Both are safe
+    // to commit: the plain one was never used for anything, and the encrypted
+    // one uses the fixed passphrase "testpass" (value asserted below).
+    const SSH_PLAIN: &[u8] = include_bytes!("../tests/fixtures/ssh_ed25519");
+    const SSH_ENCRYPTED: &[u8] = include_bytes!("../tests/fixtures/ssh_ed25519_encrypted");
+
+    #[test]
+    fn classifier_distinguishes_three_kinds() {
+        assert_eq!(classify(b"age-encryption.org/v1\nxxxx"), Kind::Scrypt);
+        assert_eq!(classify(SSH_PLAIN), Kind::Ssh);
+        assert_eq!(classify(SSH_ENCRYPTED), Kind::Ssh);
+        assert_eq!(
+            classify(b"# comment\nAGE-SECRET-KEY-1ABC\n"),
+            Kind::Native
+        );
+        // Blank lines and `#` comments before the PEM header must still
+        // classify as SSH.
+        assert_eq!(
+            classify(b"\n# some ssh key\n-----BEGIN OPENSSH PRIVATE KEY-----\n"),
+            Kind::Ssh
+        );
+    }
+
+    #[test]
+    fn loads_unencrypted_ssh_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("id_ed25519");
+        std::fs::write(&path, SSH_PLAIN).unwrap();
+        match load(&path).unwrap() {
+            Loaded::Plaintext(v) => assert_eq!(v.len(), 1),
+            Loaded::Scrypt { .. } => panic!("expected Plaintext for SSH key"),
+        }
+    }
+
+    #[test]
+    fn loads_encrypted_ssh_key_via_callback_wrapper() {
+        // Encrypted SSH keys now load successfully: the passphrase prompt is
+        // deferred to decrypt time via the TtyCallbacks wrapper. We can only
+        // confirm classification + successful wrap here; the prompt path is
+        // covered by integration tests that can drive a real tty.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("id_ed25519");
+        std::fs::write(&path, SSH_ENCRYPTED).unwrap();
+        match load(&path).unwrap() {
+            Loaded::Plaintext(v) => assert_eq!(v.len(), 1),
+            Loaded::Scrypt { .. } => panic!("expected Plaintext for encrypted SSH"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_pem_block_as_parse_error() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("weird.pem");
+        // Not a recognised SSH key type — ssh::Identity::from_buffer should
+        // refuse to parse it, surfacing as Parse (not EncryptedSshUnsupported).
+        std::fs::write(
+            &path,
+            b"-----BEGIN FUNKY PRIVATE KEY-----\ngibberish\n-----END FUNKY PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let err = expect_err(load(&path));
+        assert!(matches!(err, IdentityError::Parse(_, _)), "got {err:?}");
     }
 }

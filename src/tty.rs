@@ -1,3 +1,5 @@
+use age::Callbacks;
+use age::secrecy::SecretString;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -7,6 +9,35 @@ pub enum TtyError {
     Cancelled,
     #[error("tty io: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// [`age::Callbacks`] implementation that routes `request_passphrase` through
+/// [`prompt_passphrase`]. Used to wrap encrypted SSH identities so the
+/// passphrase is only requested when age actually tries to unwrap a matching
+/// stanza. Follows the same pattern as rage's `UiCallbacks`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TtyCallbacks;
+
+impl Callbacks for TtyCallbacks {
+    fn display_message(&self, message: &str) {
+        eprintln!("rspass: {message}");
+    }
+
+    fn confirm(&self, _message: &str, _yes: &str, _no: Option<&str>) -> Option<bool> {
+        None
+    }
+
+    fn request_public_string(&self, _description: &str) -> Option<String> {
+        None
+    }
+
+    fn request_passphrase(&self, description: &str) -> Option<SecretString> {
+        match prompt_passphrase(description) {
+            Ok(s) if s.is_empty() => None,
+            Ok(s) => Some(SecretString::from(s.as_str().to_string())),
+            Err(_) => None,
+        }
+    }
 }
 
 /// Read a passphrase from the controlling tty (or stdin when piped), with

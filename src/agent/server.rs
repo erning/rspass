@@ -170,19 +170,64 @@ fn dispatch(agent: &mut Agent, req: Request) -> (Response, bool) {
 
 fn handle_add(agent: &mut Agent, path: String, identity_data: String) -> Response {
     let path = PathBuf::from(path);
-    let identities = match age::IdentityFile::from_buffer(std::io::Cursor::new(
-        identity_data.as_bytes(),
-    )) {
-        Ok(f) => match f.into_identities() {
-            Ok(v) => v,
-            Err(e) => return Response::err("parse_failed", format!("{e:?}")),
-        },
-        Err(e) => return Response::err("parse_failed", format!("{e}")),
+    let bytes = identity_data.as_bytes();
+    let (identities, pubkeys) = match crate::identity::classify(bytes) {
+        crate::identity::Kind::Scrypt => {
+            return Response::err(
+                "parse_failed",
+                "scrypt-wrapped identity reached daemon; CLI must unlock it first",
+            );
+        }
+        crate::identity::Kind::Native => {
+            let id_file = match age::IdentityFile::from_buffer(std::io::Cursor::new(bytes)) {
+                Ok(f) => f,
+                Err(e) => return Response::err("parse_failed", format!("{e}")),
+            };
+            let ids = match id_file.into_identities() {
+                Ok(v) => v,
+                Err(e) => return Response::err("parse_failed", format!("{e:?}")),
+            };
+            let pk = derive_x25519_pubkeys(&identity_data);
+            (ids, pk)
+        }
+        crate::identity::Kind::Ssh => {
+            let id = match age::ssh::Identity::from_buffer(
+                std::io::Cursor::new(bytes),
+                Some(path.display().to_string()),
+            ) {
+                Ok(id) => id,
+                Err(e) => return Response::err("parse_failed", format!("{e}")),
+            };
+            match id {
+                age::ssh::Identity::Unencrypted(_) => {
+                    // Derive an ssh-openssh public key string for `agent ls`
+                    // / `agent status`. The age crate doesn't expose a pubkey
+                    // accessor on age::ssh::Identity, so re-parse via ssh-key.
+                    // A parse failure here is unexpected (we just classified
+                    // the bytes as SSH), but we leave pubkeys empty rather
+                    // than fail the add if it happens.
+                    let pk = ssh_key::PrivateKey::from_openssh(bytes)
+                        .ok()
+                        .and_then(|sk| sk.public_key().to_openssh().ok())
+                        .map(|s| vec![s])
+                        .unwrap_or_default();
+                    (vec![Box::new(id) as crate::identity::BoxIdentity], pk)
+                }
+                age::ssh::Identity::Encrypted(_) => {
+                    return Response::err(
+                        "parse_failed",
+                        "encrypted SSH private keys are not supported",
+                    );
+                }
+                age::ssh::Identity::Unsupported(_) => {
+                    return Response::err("parse_failed", "unsupported SSH key type");
+                }
+            }
+        }
     };
     if identities.is_empty() {
         return Response::err("empty_identity", "no identities parsed from data");
     }
-    let pubkeys = derive_x25519_pubkeys(&identity_data);
     if agent.identities.contains_key(&path) {
         tracing::warn!("overwriting existing entry at {}", path.display());
     }

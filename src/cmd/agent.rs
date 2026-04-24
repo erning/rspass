@@ -14,7 +14,7 @@ use crate::agent::proto::{Request, Response};
 use crate::agent::spawn;
 use crate::config::{self, Config};
 use crate::error::RspassError;
-use crate::identity::{self, IdentityError, Loaded};
+use crate::identity::{self, IdentityError, Kind};
 use crate::tty::{self, TtyError};
 
 #[derive(Subcommand, Debug)]
@@ -234,19 +234,25 @@ enum AddOutcome {
 }
 
 /// Classify the identity file at `path` and produce the identity text to
-/// send to the daemon. For scrypt files this involves a passphrase prompt
-/// with the retry/skip/cancel semantics from DESIGN.md §7.
+/// send to the daemon. For scrypt and encrypted-SSH files this prompts for a
+/// passphrase with the retry/skip/cancel semantics from DESIGN.md §7; the
+/// daemon only ever receives unencrypted identity material (age native,
+/// unencrypted SSH PEM, or the unlocked inner of a scrypt blob).
 fn build_identity_data(path: &Path) -> Result<AddOutcome, RspassError> {
-    match identity::load(path)? {
-        Loaded::Plaintext(_) => {
-            let data = std::fs::read_to_string(path).map_err(RspassError::Io)?;
-            Ok(AddOutcome::Ready(data))
+    let data = std::fs::read(path).map_err(RspassError::Io)?;
+    match identity::classify(&data) {
+        Kind::Scrypt => prompt_and_unlock_scrypt(path),
+        Kind::Ssh => build_ssh_identity_data(path, &data),
+        Kind::Native => {
+            let text = String::from_utf8(data).map_err(|e| {
+                RspassError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
+            Ok(AddOutcome::Ready(text))
         }
-        Loaded::Scrypt { path: p } => prompt_and_unlock(&p),
     }
 }
 
-fn prompt_and_unlock(path: &Path) -> Result<AddOutcome, RspassError> {
+fn prompt_and_unlock_scrypt(path: &Path) -> Result<AddOutcome, RspassError> {
     loop {
         let label = format!("Passphrase for {}", path.display());
         let pass = match tty::prompt_passphrase(&label) {
@@ -264,6 +270,50 @@ fn prompt_and_unlock(path: &Path) -> Result<AddOutcome, RspassError> {
                 continue;
             }
             Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// Handle an OpenSSH private key. Unencrypted keys pass through unchanged.
+/// Encrypted keys are decrypted on the CLI side (so the daemon, which has no
+/// tty, never has to prompt) and re-serialised as unencrypted OpenSSH PEM
+/// via the `ssh-key` crate.
+fn build_ssh_identity_data(path: &Path, data: &[u8]) -> Result<AddOutcome, RspassError> {
+    let key = ssh_key::PrivateKey::from_openssh(data).map_err(|e| {
+        RspassError::from(IdentityError::Parse(path.to_path_buf(), e.to_string()))
+    })?;
+    if !key.is_encrypted() {
+        let text = String::from_utf8(data.to_vec()).map_err(|e| {
+            RspassError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })?;
+        return Ok(AddOutcome::Ready(text));
+    }
+    loop {
+        let label = format!("Passphrase for {}", path.display());
+        let pass = match tty::prompt_passphrase(&label) {
+            Ok(p) => p,
+            Err(TtyError::Cancelled) => return Err(RspassError::PassphraseCancelled),
+            Err(TtyError::Io(e)) => return Err(RspassError::Io(e)),
+        };
+        if pass.is_empty() {
+            return Ok(AddOutcome::Skipped);
+        }
+        match key.decrypt(pass.as_bytes()) {
+            Ok(decrypted) => {
+                let pem = decrypted
+                    .to_openssh(ssh_key::LineEnding::LF)
+                    .map_err(|e| {
+                        RspassError::from(IdentityError::Parse(
+                            path.to_path_buf(),
+                            format!("failed to re-encode SSH key: {e}"),
+                        ))
+                    })?;
+                return Ok(AddOutcome::Ready((*pem).clone()));
+            }
+            Err(_) => {
+                eprintln!("  wrong passphrase, retry (empty input to skip)");
+                continue;
+            }
         }
     }
 }
@@ -296,4 +346,50 @@ fn absolute_path(s: &str) -> Result<PathBuf, RspassError> {
 
 fn agent_err(e: ClientError) -> RspassError {
     RspassError::Agent(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    //! The prompt branch of `build_ssh_identity_data` needs a real tty, so
+    //! it's covered by integration tests. These unit tests pin down the
+    //! ssh-key round-trip we rely on: the encrypted fixture decrypts with
+    //! the known passphrase, and the re-encoded PEM is unencrypted and
+    //! parses again as an unencrypted age SSH identity.
+
+    const SSH_PLAIN: &[u8] = include_bytes!("../../tests/fixtures/ssh_ed25519");
+    const SSH_ENCRYPTED: &[u8] = include_bytes!("../../tests/fixtures/ssh_ed25519_encrypted");
+
+    #[test]
+    fn ssh_key_recognises_unencrypted_fixture() {
+        let key = ssh_key::PrivateKey::from_openssh(SSH_PLAIN).unwrap();
+        assert!(!key.is_encrypted());
+    }
+
+    #[test]
+    fn ssh_key_round_trip_decrypts_and_reserialises() {
+        let encrypted = ssh_key::PrivateKey::from_openssh(SSH_ENCRYPTED).unwrap();
+        assert!(encrypted.is_encrypted());
+        let decrypted = encrypted.decrypt(b"testpass").expect("decrypt");
+        assert!(!decrypted.is_encrypted());
+        let pem = decrypted.to_openssh(ssh_key::LineEnding::LF).unwrap();
+        // Re-encoded PEM must be parseable by age's ssh path as unencrypted.
+        match age::ssh::Identity::from_buffer(
+            std::io::Cursor::new(pem.as_bytes()),
+            Some("round-trip".into()),
+        )
+        .unwrap()
+        {
+            age::ssh::Identity::Unencrypted(_) => {}
+            age::ssh::Identity::Encrypted(_) => {
+                panic!("re-encoded key still reports as encrypted")
+            }
+            age::ssh::Identity::Unsupported(_) => panic!("age rejected re-encoded key"),
+        }
+    }
+
+    #[test]
+    fn ssh_key_decrypt_rejects_wrong_passphrase() {
+        let encrypted = ssh_key::PrivateKey::from_openssh(SSH_ENCRYPTED).unwrap();
+        assert!(encrypted.decrypt(b"not-the-right-pass").is_err());
+    }
 }
