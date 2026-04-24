@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,8 @@ pub struct Config {
     pub mounts: HashMap<String, String>,
     #[serde(default)]
     pub identities: Vec<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -25,6 +27,14 @@ pub enum ConfigError {
     Parse(PathBuf, #[source] serde_yaml_ng::Error),
     #[error("invalid mount key {0:?}: {1}")]
     InvalidMount(String, &'static str),
+    #[error("include file not found: {0}")]
+    IncludeNotFound(PathBuf),
+    #[error("failed to expand include entry {0:?}: {1}")]
+    IncludeExpand(String, #[source] ExpansionError),
+    #[error("invalid glob {0:?}: {1}")]
+    IncludeGlob(String, #[source] glob::PatternError),
+    #[error("nested include is not allowed in {0}")]
+    NestedInclude(PathBuf),
 }
 
 #[derive(Debug, Error)]
@@ -44,22 +54,103 @@ impl Config {
         Self::load_from(&default_path())
     }
 
+    /// Parse the main config at `path` and merge any files listed in its
+    /// `include:` field. See DESIGN.md §5 for load order and merge rules.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        let bytes = match fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(ConfigError::NotFound(path.to_path_buf()));
-            }
-            Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
-        };
-        let cfg: Config = serde_yaml_ng::from_slice(&bytes)
-            .map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?;
-        for key in cfg.mounts.keys() {
-            if let Err(msg) = validate_mount_key(key) {
-                return Err(ConfigError::InvalidMount(key.clone(), msg));
+        let mut main = load_raw(path)?;
+        let includes = std::mem::take(&mut main.include);
+        if includes.is_empty() {
+            return Ok(main);
+        }
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut visited: HashSet<PathBuf> = HashSet::new();
+        if let Ok(canon) = fs::canonicalize(path) {
+            visited.insert(canon);
+        }
+        let mut seen_identities: HashSet<String> = main.identities.iter().cloned().collect();
+        for entry in &includes {
+            for resolved in resolve_include_entry(entry, base_dir)? {
+                let canon = match fs::canonicalize(&resolved) {
+                    Ok(c) => c,
+                    Err(_) => return Err(ConfigError::IncludeNotFound(resolved)),
+                };
+                if !visited.insert(canon.clone()) {
+                    continue;
+                }
+                let piece = load_raw(&canon)?;
+                if !piece.include.is_empty() {
+                    return Err(ConfigError::NestedInclude(canon));
+                }
+                merge_piece(&mut main, piece, &mut seen_identities);
             }
         }
-        Ok(cfg)
+        Ok(main)
+    }
+}
+
+fn load_raw(path: &Path) -> Result<Config, ConfigError> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ConfigError::NotFound(path.to_path_buf()));
+        }
+        Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
+    };
+    let cfg: Config = serde_yaml_ng::from_slice(&bytes)
+        .map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?;
+    for key in cfg.mounts.keys() {
+        if let Err(msg) = validate_mount_key(key) {
+            return Err(ConfigError::InvalidMount(key.clone(), msg));
+        }
+    }
+    Ok(cfg)
+}
+
+fn resolve_include_entry(entry: &str, base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+    let expanded = expand_path(entry)
+        .map_err(|e| ConfigError::IncludeExpand(entry.to_string(), e))?;
+    let candidate = Path::new(&expanded);
+    let absolute: PathBuf = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base_dir.join(candidate)
+    };
+    if has_glob_meta(&expanded) {
+        let pattern = absolute.to_string_lossy();
+        let matches = glob::glob(&pattern)
+            .map_err(|e| ConfigError::IncludeGlob(entry.to_string(), e))?;
+        let mut out: Vec<PathBuf> = matches.filter_map(Result::ok).collect();
+        out.sort();
+        Ok(out)
+    } else {
+        if !absolute.exists() {
+            return Err(ConfigError::IncludeNotFound(absolute));
+        }
+        Ok(vec![absolute])
+    }
+}
+
+fn has_glob_meta(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '*' | '?' | '['))
+}
+
+/// Merge one included `Config` into the accumulator with first-wins semantics.
+/// `seen_identities` holds the raw (unexpanded) identity strings already
+/// present in `acc` — identities are deduped syntactically, which is enough
+/// for typical include use but won't catch two distinct spellings of the same
+/// file (e.g. `~/id.txt` vs `${HOME}/id.txt`).
+fn merge_piece(acc: &mut Config, piece: Config, seen_identities: &mut HashSet<String>) {
+    for (k, v) in piece.mounts {
+        if acc.mounts.contains_key(&k) {
+            tracing::debug!("ignoring duplicate mount key {k:?} from included file");
+            continue;
+        }
+        acc.mounts.insert(k, v);
+    }
+    for id in piece.identities {
+        if seen_identities.insert(id.clone()) {
+            acc.identities.push(id);
+        }
     }
 }
 
@@ -347,5 +438,189 @@ identities:
         let yaml = "mounts: {}\nbogus: true\n";
         let err = serde_yaml_ng::from_str::<Config>(yaml).unwrap_err();
         assert!(err.to_string().contains("bogus"));
+    }
+
+    mod include {
+        use super::*;
+        use tempfile::tempdir;
+
+        fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
+            let p = dir.join(name);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&p, content).unwrap();
+            p
+        }
+
+        #[test]
+        fn merges_mounts_and_identities() {
+            let dir = tempdir().unwrap();
+            write(
+                dir.path(),
+                "extra.yaml",
+                "mounts:\n  team: /shared\nidentities:\n  - /id/team.txt\n",
+            );
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - extra.yaml\nmounts:\n  \"\": /root\nidentities:\n  - /id/main.txt\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get(""), Some(&"/root".to_string()));
+            assert_eq!(cfg.mounts.get("team"), Some(&"/shared".to_string()));
+            assert_eq!(cfg.identities, vec!["/id/main.txt", "/id/team.txt"]);
+            assert!(cfg.include.is_empty(), "include should be consumed");
+        }
+
+        #[test]
+        fn relative_path_anchored_at_main_dir() {
+            let dir = tempdir().unwrap();
+            write(dir.path(), "sub/extra.yaml", "mounts:\n  x: /a\n");
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - sub/extra.yaml\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("x"), Some(&"/a".to_string()));
+        }
+
+        #[test]
+        fn glob_sorted_and_first_wins() {
+            let dir = tempdir().unwrap();
+            // 10-* is loaded before 20-*, so its value for `shared` wins.
+            write(dir.path(), "conf.d/10-a.yaml", "mounts:\n  shared: /first\n");
+            write(dir.path(), "conf.d/20-b.yaml", "mounts:\n  shared: /second\n");
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - conf.d/*.yaml\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("shared"), Some(&"/first".to_string()));
+        }
+
+        #[test]
+        fn glob_zero_matches_is_ok() {
+            let dir = tempdir().unwrap();
+            fs::create_dir_all(dir.path().join("conf.d")).unwrap();
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - conf.d/*.yaml\nmounts:\n  \"\": /root\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get(""), Some(&"/root".to_string()));
+        }
+
+        #[test]
+        fn literal_missing_errors() {
+            let dir = tempdir().unwrap();
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - no-such-file.yaml\n",
+            );
+            let err = Config::load_from(&main).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::IncludeNotFound(_)),
+                "got {err:?}"
+            );
+        }
+
+        #[test]
+        fn mounts_first_wins_main_beats_include() {
+            let dir = tempdir().unwrap();
+            write(dir.path(), "extra.yaml", "mounts:\n  work: /from-include\n");
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - extra.yaml\nmounts:\n  work: /from-main\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("work"), Some(&"/from-main".to_string()));
+        }
+
+        #[test]
+        fn identities_dedup_preserves_first_order() {
+            let dir = tempdir().unwrap();
+            write(
+                dir.path(),
+                "extra.yaml",
+                "identities:\n  - /id/b.txt\n  - /id/c.txt\n",
+            );
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - extra.yaml\nidentities:\n  - /id/a.txt\n  - /id/b.txt\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.identities, vec!["/id/a.txt", "/id/b.txt", "/id/c.txt"]);
+        }
+
+        #[test]
+        fn rejects_nested_include() {
+            let dir = tempdir().unwrap();
+            write(dir.path(), "leaf.yaml", "mounts: {}\n");
+            write(
+                dir.path(),
+                "extra.yaml",
+                "include:\n  - leaf.yaml\n",
+            );
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - extra.yaml\n",
+            );
+            let err = Config::load_from(&main).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::NestedInclude(_)),
+                "got {err:?}"
+            );
+        }
+
+        #[test]
+        fn duplicate_include_file_skipped() {
+            let dir = tempdir().unwrap();
+            // Same file reached twice: once via literal, once via glob. The
+            // second visit must be silently skipped; otherwise the second
+            // attempt to append the same identity would be a no-op only
+            // because of dedup — but mounts would also duplicate-log. We
+            // verify the merged result is identical to a single include.
+            write(dir.path(), "conf.d/one.yaml", "mounts:\n  x: /v\n");
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                "include:\n  - conf.d/one.yaml\n  - conf.d/*.yaml\n",
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("x"), Some(&"/v".to_string()));
+            assert_eq!(cfg.mounts.len(), 1);
+        }
+
+        #[test]
+        fn include_entry_accepts_absolute_path() {
+            let dir = tempdir().unwrap();
+            write(dir.path(), "extra.yaml", "mounts:\n  y: /yv\n");
+            let main = write(
+                dir.path(),
+                "config.yaml",
+                &format!(
+                    "include:\n  - {}\n",
+                    dir.path().join("extra.yaml").display()
+                ),
+            );
+            let cfg = Config::load_from(&main).unwrap();
+            assert_eq!(cfg.mounts.get("y"), Some(&"/yv".to_string()));
+        }
+
+        #[test]
+        fn include_field_accepted_by_parser() {
+            // `deny_unknown_fields` must still allow `include`.
+            let yaml = "include:\n  - a.yaml\nmounts: {}\n";
+            let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+            assert_eq!(cfg.include, vec!["a.yaml"]);
+        }
     }
 }

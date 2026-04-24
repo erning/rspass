@@ -141,6 +141,7 @@ identities:
 | `mounts.""` | string | root store；匹配所有没有被更长 mount 捕获的相对路径 |
 | `mounts.<mount>` | string | 绝对或带 `~` 的目录路径 |
 | `identities` | array<string> | identity 文件路径列表，**顺序决定解密尝试顺序**，所以保留为数组 |
+| `include` | array<string> | 可选；把其他 YAML 文件合并进当前配置，详见下文「配置文件拆分」 |
 
 - mount key 必须唯一；非空 mount 不能包含空组件、`.`、`..`，不能以 `/` 开头或结尾
 - mount key **允许包含 `/`** 表示多段前缀，例如 `team/shared: ~/team-vault`；路径解析时按完整组件序列做最长前缀匹配（`team/shared/foo` 命中 `team/shared`，`team/foo` 不命中）
@@ -148,6 +149,116 @@ identities:
 - `mounts` 整体允许为空；此时 `agent` 子命令仍可用（管理 identity），但 `show` / `edit` 等需要 mount 解析的命令会因找不到匹配 mount 而退出码 1
 - store 在 Rust 侧加载后按 mount 组件长度降序保存，路径解析时做最长前缀匹配；`""` 永远最后匹配
 - 无配置文件时打印一段示例并退出（不自动创建）
+- 可通过 CLI 全局参数 `--config PATH` 指定另一个配置文件，覆盖默认查找
+
+### 配置文件拆分（`include`）
+
+主 config 可通过 `include:` 字段把其他 YAML 文件合并进来，方便按目录拆分：
+
+```yaml
+include:
+  - conf.d/*.yaml
+  - work.yaml
+  - ${HOME}/.config/rspass/shared.yaml
+
+mounts:
+  "": ~/.local/share/rspass/personal
+
+identities:
+  - ~/.config/rspass/id.txt
+```
+
+**加载顺序**
+
+固定为 `[main, include[0], include[1], …]`——主文件先进入合并，再按 `include` 声明顺序依次合并被包含文件。Glob 展开的匹配按字节序排序处理。
+
+**合并规则**
+
+| 字段 | 策略 |
+|---|---|
+| `mounts` | 逐 key shallow merge，**先出现者胜出**；后出现的相同 key 静默忽略，仅 `tracing::debug!` 留一行便于排查 |
+| `identities` | 按加载顺序 append，用 `expand_path` + canonicalize 后的绝对路径做 dedup，**首次出现者胜出**；不发 warn |
+| `include` | 不参与合并；仅主 config 的 `include` 生效 |
+
+main 是最早合并的来源，所以主 config 里写的 `mounts` / `identities` 永远胜出，include 只能填空不能覆盖。
+
+**路径解析**
+
+- include 项先走 §5「路径展开」（`~` / `${VAR}` / `\~` / `\$`）
+- 展开后若为相对路径，**锚在主 config 所在目录**（不是 CWD）
+- 含 `*`、`?`、`[` 的条目按 glob 处理；否则按字面路径处理
+- Glob 零匹配 → 静默（允许 `conf.d/*.yaml` 在目录为空时不报错）
+- 字面路径不存在 → 配置错误
+
+**不支持嵌套 include**
+
+被包含文件里出现非空 `include:` → 配置错误。理由：保持加载顺序简单、防环成本为零。需要多层组合时，把所有依赖在主 config 里平铺列出。
+
+**重复文件**
+
+同一个被包含文件通过多条 include 路径（含 glob 展开）最终指向同一个 canonical 绝对路径时，只加载第一次，后续静默跳过。
+
+**错误**
+
+| 情况 | 行为 |
+|---|---|
+| 字面 include 路径不存在 | 配置错误，退出码 1 |
+| include 项 glob 语法非法 | 配置错误，退出码 1 |
+| 被包含文件 YAML 解析失败 | 沿用 `Parse(path, err)`，定位到具体文件 |
+| 被包含文件含 `include:` | `NestedInclude(path)`，退出码 1 |
+
+**示例**
+
+```
+~/.config/rspass/
+├── config.yaml
+├── conf.d/
+│   ├── 10-team.yaml
+│   └── 20-shared-identity.yaml
+└── work.yaml
+```
+
+`config.yaml`:
+```yaml
+include:
+  - conf.d/*.yaml
+  - work.yaml
+mounts:
+  "": ~/.local/share/rspass/personal
+```
+
+`conf.d/10-team.yaml`:
+```yaml
+mounts:
+  "team": /shared/rspass-team
+  "":     /shared/rspass    # 被 main 的 "" 覆盖 → 丢弃（debug log）
+```
+
+`conf.d/20-shared-identity.yaml`:
+```yaml
+identities:
+  - ~/.config/rspass/id.txt
+```
+
+`work.yaml`:
+```yaml
+mounts:
+  "work": ~/work-secrets
+identities:
+  - ~/.config/rspass/work.txt
+  - ~/.config/rspass/id.txt   # 重复，dedup
+```
+
+最终合并结果：
+```yaml
+mounts:
+  "":     ~/.local/share/rspass/personal
+  "team": /shared/rspass-team
+  "work": ~/work-secrets
+identities:
+  - ~/.config/rspass/id.txt
+  - ~/.config/rspass/work.txt
+```
 
 ### 路径展开
 

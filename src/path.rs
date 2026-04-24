@@ -113,6 +113,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             identities: Vec::new(),
+            include: Vec::new(),
         }
     }
 
@@ -229,6 +230,7 @@ mod tests {
         let cfg = Config {
             mounts: HashMap::new(),
             identities: Vec::new(),
+            include: Vec::new(),
         };
         assert!(matches!(
             resolve(&cfg, "anything").unwrap_err(),
