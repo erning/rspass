@@ -67,12 +67,12 @@ pub fn run() -> Result<(), RunError> {
         let stream = match incoming {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("accept failed: {e}");
+                tracing::debug!("accept failed: {e}");
                 continue;
             }
         };
         if let Err(e) = verify_peer(&stream, expected_uid) {
-            tracing::warn!("rejecting connection: {e}");
+            tracing::debug!("rejecting connection: {e}");
             continue;
         }
         match handle_connection(&mut agent, stream) {
@@ -81,7 +81,7 @@ pub fn run() -> Result<(), RunError> {
                 tracing::info!("stop requested; shutting down");
                 break;
             }
-            Err(e) => tracing::warn!("connection error: {e}"),
+            Err(e) => tracing::debug!("connection error: {e}"),
         }
     }
 
@@ -226,7 +226,7 @@ fn handle_add(agent: &mut Agent, path: String, identity_data: String) -> Respons
         return Response::err("empty_identity", "no identities parsed from data");
     }
     if agent.identities.contains_key(&path) {
-        tracing::warn!("overwriting existing entry at {}", path.display());
+        tracing::debug!("overwriting existing entry at {}", path.display());
     }
     agent.identities.insert(
         path,

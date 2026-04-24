@@ -165,6 +165,9 @@ fn classify_identities(config: &Config) -> (Vec<BoxIdentity>, Vec<PathBuf>) {
         match identity::load(&expanded) {
             Ok(Loaded::Plaintext(mut ids)) => plaintext.append(&mut ids),
             Ok(Loaded::Scrypt { path }) => scrypt_paths.push(path),
+            Err(e @ IdentityError::Open(..)) => {
+                tracing::debug!("skipping identity {id_ref:?}: {e}");
+            }
             Err(e) => {
                 tracing::warn!("skipping identity {id_ref:?}: {e}");
             }
