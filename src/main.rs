@@ -22,10 +22,12 @@ const HELP_STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
 
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_SHA"), ")");
+
 #[derive(Parser, Debug)]
 #[command(
     name = "rspass",
-    version,
+    version = VERSION,
     about = "Minimal age-only secret manager",
     disable_help_subcommand = true,
     styles = HELP_STYLES
