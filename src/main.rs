@@ -29,6 +29,9 @@ enum Command {
     Show { path: String },
     /// Decrypt, edit, and re-encrypt a secret.
     Edit { path: String },
+    /// List secrets as a tree (gopass-style).
+    #[command(alias = "ls")]
+    List { prefix: Option<String> },
     /// Manage the in-memory identity agent.
     Agent {
         #[command(subcommand)]
@@ -60,6 +63,10 @@ fn dispatch(cli: Cli) -> Result<(), RspassError> {
         Command::Edit { path } => {
             let config = config::Config::load()?;
             cmd::edit::run(&config, &path)
+        }
+        Command::List { prefix } => {
+            let config = config::Config::load()?;
+            cmd::list::run(&config, prefix.as_deref())
         }
         Command::Agent { op } => {
             let config = config::Config::load()?;

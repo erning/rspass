@@ -13,7 +13,7 @@
 - 存储结构与 gopass 兼容：每条 secret 是一个独立 `.age` 文件，便于 git 同步
 - 多 store，多 recipient，目录粒度的 recipient 控制
 - 长期持有解密 identity 的内存 agent，避免反复输入 passphrase
-- 只暴露最小命令集：`show` / `edit` / `agent`
+- 只暴露最小命令集：`show` / `edit` / `list` / `agent`
 
 ### 非目标
 
@@ -57,6 +57,7 @@
 ```
 rspass show <PATH>          # 解密并输出全文到 stdout
 rspass edit <PATH>          # 解密 → tempfile → $EDITOR → 重新加密
+rspass list [PREFIX]        # gopass 风格的树形列表（别名：ls）
 rspass agent start          # 启动 daemon (幂等)
 rspass agent stop           # 关闭 daemon
 rspass agent status         # 进程状态、socket 路径、已加载 identity 数
@@ -463,6 +464,37 @@ CLI 端 `agent ls` 把这个结构格式化成本节末尾的文本输出。
 
 均直接对应 §8 的协议；`add` / `start` 在 socket 不可用时触发 fork。
 
+### 9.4 `list [PREFIX]` (alias: `ls`)
+
+gopass 风格的树形列表，仅读取文件名，不做任何解密。别名 `ls` 与 gopass CLI 一致。
+
+```
+1. 解析 PREFIX：
+   - 无参或空串 → 列出所有 mount，用统一的 "rspass" 顶级标签，每个 mount 作为顶级分支（带绝对路径注释），mount key 按字母序排列（root mount `""` 最先）
+   - 非空 PREFIX → 走 §3 的最长组件前缀 mount 匹配，允许尾随 `/`；rel 部分可以为空（正好命中 mount）或指向某个子目录；最终指向文件系统里的一个目录
+2. 顶级 label：
+   - 列所有 mount 时：顶端固定是 `rspass`；下一层每个 mount 显示为 `<name> (<abs path>)`；root mount 的 name 显示为 `.` 以保持视觉对齐
+   - 列 PREFIX 时：**不加 `rspass` 顶端**，直接把 `<PREFIX>/ (<abs path>)` 作为树根（与 `gopass list <prefix>` 一致）
+3. 目录遍历：
+   - 忽略以 `.` 开头的条目（`.age-recipients`、`.git/` 等）
+   - 以 `.age` 结尾的文件作为 secret 叶子，去掉后缀显示
+   - 其他文件忽略
+   - 空目录（递归后没有 `.age` 子项）不输出
+4. 排序：同级目录在前、文件在后，各自内部按字母序
+5. 渲染：每层 4 字符缩进；非末项用 `├── ` + `│   `，末项用 `└── ` + `    `；目录叶子附 `/`
+6. PREFIX 解析失败：不存在的目录 → 退出码 1 并提示；前缀是 secret 文件（不是目录）→ 提示使用 `show`
+
+示例输出：
+
+    rspass
+    ├── . (/Users/erning/.local/share/rspass)
+    │   └── notes
+    └── ai (/Users/erning/projects/gopass-ai)
+        └── dashscope/
+            └── api/
+                └── key
+```
+
 ---
 
 ## 10. 加密细节
@@ -579,7 +611,7 @@ rspass/
 ## 13. 显式不做的事 / 未来可能扩展
 
 - **`init <store>`**：v1 不做，用户手动 `mkdir` + 写 `.age-recipients` + 改 config
-- **`ls` / `find` / `grep`**：v1 不做；用 shell `find` / `rg` 直接对 store 目录足够
+- **`find` / `grep`**：v1 不做；用 shell `find` / `rg` 直接对 store 目录足够
 - **`rm` / `mv` / `cp`**：v1 不做；用 shell 直接操作（recipients 不变，无需重加密）
 - **重加密（rotate）**：v1 不做；recipients 变更后用户得自己 `show` + `edit` 触发重写。未来可加 `rspass reencrypt <store>` 批量化
 - **Git 集成**：v1 不做；用户自己在 store 目录里 `git init` / `git commit`
