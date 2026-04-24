@@ -19,3 +19,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rpassword = "7"
 zeroize = "1"
 tempfile = "3"
+serde_json = "1"
+base64 = "0.22"
+libc = "0.2"

@@ -29,6 +29,8 @@ pub enum RspassError {
     EditorFailed,
     #[error("target path escaped store root: {0}")]
     PathEscape(std::path::PathBuf),
+    #[error("agent error: {0}")]
+    Agent(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -39,6 +41,7 @@ impl RspassError {
         match self {
             Self::Crypto(crate::crypto::CryptoError::NoMatchingIdentity) => 2,
             Self::PassphraseCancelled => 3,
+            Self::Agent(_) => 4,
             _ => 1,
         }
     }

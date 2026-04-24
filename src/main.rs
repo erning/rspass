@@ -1,3 +1,4 @@
+mod agent;
 mod cmd;
 mod config;
 mod crypto;
@@ -31,22 +32,11 @@ enum Command {
     /// Manage the in-memory identity agent.
     Agent {
         #[command(subcommand)]
-        op: AgentOp,
+        op: cmd::agent::Op,
     },
     /// Internal: agent daemon entry point.
     #[command(name = "__agent-daemon", hide = true)]
     AgentDaemon,
-}
-
-#[derive(Subcommand, Debug)]
-#[allow(dead_code)]
-enum AgentOp {
-    Start,
-    Stop,
-    Status,
-    Ls,
-    Add { path: Option<String> },
-    Rm { path: String },
 }
 
 fn main() -> std::process::ExitCode {
@@ -71,8 +61,17 @@ fn dispatch(cli: Cli) -> Result<(), RspassError> {
             let config = config::Config::load()?;
             cmd::edit::run(&config, &path)
         }
-        Command::Agent { .. } => todo!("agent cli is implemented in step 7"),
-        Command::AgentDaemon => todo!("agent daemon is implemented in step 6"),
+        Command::Agent { op } => {
+            let config = config::Config::load()?;
+            cmd::agent::run(&config, op)
+        }
+        Command::AgentDaemon => {
+            agent::server::run().map_err(|e| {
+                // Daemon errors come from pre-accept-loop setup; map to the
+                // generic CLI error → exit 1.
+                RspassError::Io(std::io::Error::other(e.to_string()))
+            })
+        }
     }
 }
 

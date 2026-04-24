@@ -58,13 +58,16 @@ fn load_plaintext(path: &Path) -> Result<Vec<BoxIdentity>, IdentityError> {
 }
 
 /// Decrypt an scrypt-protected identity file with the given passphrase and
-/// parse the plaintext as an age identity file (possibly containing multiple
-/// `AGE-SECRET-KEY-1...` lines).
+/// return the plaintext body (an age identity file that may contain one or
+/// more `AGE-SECRET-KEY-1...` lines).
 ///
 /// A wrong passphrase surfaces as [`IdentityError::WrongPassphrase`] so the
 /// caller can continue on to the next identity. A malformed file surfaces as
 /// [`IdentityError::Parse`] and should abort.
-pub fn unlock_scrypt(path: &Path, passphrase: &str) -> Result<Vec<BoxIdentity>, IdentityError> {
+pub fn unlock_scrypt_to_text(
+    path: &Path,
+    passphrase: &str,
+) -> Result<zeroize::Zeroizing<String>, IdentityError> {
     let ciphertext =
         std::fs::read(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
     let decryptor = age::Decryptor::new(&ciphertext[..])
@@ -85,7 +88,16 @@ pub fn unlock_scrypt(path: &Path, passphrase: &str) -> Result<Vec<BoxIdentity>, 
     reader
         .read_to_end(&mut plaintext)
         .map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
-    let id_file = age::IdentityFile::from_buffer(std::io::Cursor::new(&plaintext))
+    let text = String::from_utf8(plaintext)
+        .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
+    Ok(zeroize::Zeroizing::new(text))
+}
+
+/// Convenience: unlock scrypt and parse the resulting text as identities.
+/// Used by local decrypt fallback.
+pub fn unlock_scrypt(path: &Path, passphrase: &str) -> Result<Vec<BoxIdentity>, IdentityError> {
+    let text = unlock_scrypt_to_text(path, passphrase)?;
+    let id_file = age::IdentityFile::from_buffer(std::io::Cursor::new(text.as_bytes()))
         .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
     let ids = id_file
         .into_identities()
