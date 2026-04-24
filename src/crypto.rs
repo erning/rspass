@@ -51,8 +51,8 @@ pub fn encrypt(plaintext: &[u8], recipients: &[BoxRecipient]) -> Result<Vec<u8>,
         return Err(CryptoError::Other("no recipients".into()));
     }
     let iter = recipients.iter().map(|b| b.as_ref());
-    let encryptor = age::Encryptor::with_recipients(iter)
-        .map_err(|e| CryptoError::Other(e.to_string()))?;
+    let encryptor =
+        age::Encryptor::with_recipients(iter).map_err(|e| CryptoError::Other(e.to_string()))?;
     let mut out = Vec::new();
     let mut writer = encryptor.wrap_output(&mut out)?;
     writer.write_all(plaintext)?;

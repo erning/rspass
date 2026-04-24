@@ -81,8 +81,7 @@ pub fn resolve(config: &Config, input: &str) -> Result<Resolved, PathError> {
 
     let store_root_str = config.mounts.get(mount).expect("mount key must exist");
     let store_root = PathBuf::from(
-        expand_path(store_root_str)
-            .map_err(|e| PathError::Expansion(store_root_str.clone(), e))?,
+        expand_path(store_root_str).map_err(|e| PathError::Expansion(store_root_str.clone(), e))?,
     );
     let rel: PathBuf = rel_components.iter().collect();
     let mut age_file = store_root.join(&rel);
@@ -152,10 +151,7 @@ mod tests {
 
     #[test]
     fn shorter_prefix_matches_when_longer_does_not() {
-        let cfg = config(&[
-            ("team", "/srv/team"),
-            ("team/shared", "/srv/team-shared"),
-        ]);
+        let cfg = config(&[("team", "/srv/team"), ("team/shared", "/srv/team-shared")]);
         let r = resolve(&cfg, "team/other").unwrap();
         assert_eq!(r.mount, "team");
         assert_eq!(r.store_root, PathBuf::from("/srv/team"));
@@ -247,9 +243,6 @@ mod tests {
         let r = resolve(&cfg, "api/foo").unwrap();
         // Whatever HOME resolves to, the resulting path must end with /vault/api/foo.age
         let s = r.age_file.to_string_lossy();
-        assert!(
-            s.ends_with("/vault/api/foo.age"),
-            "unexpected path: {s}"
-        );
+        assert!(s.ends_with("/vault/api/foo.age"), "unexpected path: {s}");
     }
 }

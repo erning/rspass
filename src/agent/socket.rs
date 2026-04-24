@@ -15,9 +15,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SocketError {
-    #[error(
-        "agent socket path is undefined: set RSPASS_AGENT_SOCK, XDG_RUNTIME_DIR, or TMPDIR"
-    )]
+    #[error("agent socket path is undefined: set RSPASS_AGENT_SOCK, XDG_RUNTIME_DIR, or TMPDIR")]
     NoPath,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),

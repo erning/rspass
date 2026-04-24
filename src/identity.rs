@@ -125,8 +125,7 @@ pub fn unlock_scrypt_to_text(
     path: &Path,
     passphrase: &str,
 ) -> Result<zeroize::Zeroizing<String>, IdentityError> {
-    let ciphertext =
-        std::fs::read(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
+    let ciphertext = std::fs::read(path).map_err(|e| IdentityError::Open(path.to_path_buf(), e))?;
     let decryptor = age::Decryptor::new(&ciphertext[..])
         .map_err(|e| IdentityError::Parse(path.to_path_buf(), e.to_string()))?;
     let secret = age::secrecy::SecretString::from(passphrase.to_string());
@@ -213,7 +212,11 @@ mod tests {
     fn detects_scrypt_file_by_header() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("id.txt");
-        std::fs::write(&path, b"age-encryption.org/v1\n...rest of armored age blob...\n").unwrap();
+        std::fs::write(
+            &path,
+            b"age-encryption.org/v1\n...rest of armored age blob...\n",
+        )
+        .unwrap();
         match load(&path).unwrap() {
             Loaded::Scrypt { path: p } => assert_eq!(p, path),
             Loaded::Plaintext(_) => panic!("expected Scrypt, got Plaintext"),
@@ -231,10 +234,7 @@ mod tests {
     fn reports_open_error_for_missing_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent.txt");
-        assert!(matches!(
-            expect_err(load(&path)),
-            IdentityError::Open(_, _)
-        ));
+        assert!(matches!(expect_err(load(&path)), IdentityError::Open(_, _)));
     }
 
     #[test]
@@ -248,11 +248,7 @@ mod tests {
         ));
     }
 
-    fn write_scrypt_wrapped_identity(
-        path: &Path,
-        inner: &age::x25519::Identity,
-        passphrase: &str,
-    ) {
+    fn write_scrypt_wrapped_identity(path: &Path, inner: &age::x25519::Identity, passphrase: &str) {
         use std::io::Write;
         let inner_text = format!("{}\n", inner.to_string().expose_secret());
         let secret = age::secrecy::SecretString::from(passphrase.to_string());
@@ -304,10 +300,7 @@ mod tests {
         assert_eq!(classify(b"age-encryption.org/v1\nxxxx"), Kind::Scrypt);
         assert_eq!(classify(SSH_PLAIN), Kind::Ssh);
         assert_eq!(classify(SSH_ENCRYPTED), Kind::Ssh);
-        assert_eq!(
-            classify(b"# comment\nAGE-SECRET-KEY-1ABC\n"),
-            Kind::Native
-        );
+        assert_eq!(classify(b"# comment\nAGE-SECRET-KEY-1ABC\n"), Kind::Native);
         // Blank lines and `#` comments before the PEM header must still
         // classify as SSH.
         assert_eq!(

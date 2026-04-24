@@ -177,7 +177,10 @@ mod tests {
         let without = r#"{"op":"decrypt","ciphertext":"AAA"}"#;
         assert!(matches!(
             serde_json::from_str::<Request>(with).unwrap(),
-            Request::Decrypt { context: Some(_), .. }
+            Request::Decrypt {
+                context: Some(_),
+                ..
+            }
         ));
         assert!(matches!(
             serde_json::from_str::<Request>(without).unwrap(),
@@ -236,6 +239,9 @@ mod tests {
     fn rejects_unknown_op() {
         let json = r#"{"op":"launch_missiles"}"#;
         let err = serde_json::from_str::<Request>(json).unwrap_err();
-        assert!(err.to_string().contains("launch_missiles") || err.to_string().contains("unknown variant"));
+        assert!(
+            err.to_string().contains("launch_missiles")
+                || err.to_string().contains("unknown variant")
+        );
     }
 }

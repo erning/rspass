@@ -68,7 +68,12 @@ fn setup() -> (Scratch, age::x25519::Identity) {
     )
 }
 
-fn encrypt_into_vault(scratch: &Scratch, identity: &age::x25519::Identity, rel: &str, plaintext: &[u8]) {
+fn encrypt_into_vault(
+    scratch: &Scratch,
+    identity: &age::x25519::Identity,
+    rel: &str,
+    plaintext: &[u8],
+) {
     let pubkey = identity.to_public();
     let r: &dyn age::Recipient = &pubkey;
     let encryptor = age::Encryptor::with_recipients(std::iter::once(r)).unwrap();

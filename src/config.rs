@@ -96,8 +96,8 @@ fn load_raw(path: &Path) -> Result<Config, ConfigError> {
         }
         Err(e) => return Err(ConfigError::Io(path.to_path_buf(), e)),
     };
-    let cfg: Config = serde_yaml_ng::from_slice(&bytes)
-        .map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?;
+    let cfg: Config =
+        serde_yaml_ng::from_slice(&bytes).map_err(|e| ConfigError::Parse(path.to_path_buf(), e))?;
     for key in cfg.mounts.keys() {
         if let Err(msg) = validate_mount_key(key) {
             return Err(ConfigError::InvalidMount(key.clone(), msg));
@@ -107,8 +107,8 @@ fn load_raw(path: &Path) -> Result<Config, ConfigError> {
 }
 
 fn resolve_include_entry(entry: &str, base_dir: &Path) -> Result<Vec<PathBuf>, ConfigError> {
-    let expanded = expand_path(entry)
-        .map_err(|e| ConfigError::IncludeExpand(entry.to_string(), e))?;
+    let expanded =
+        expand_path(entry).map_err(|e| ConfigError::IncludeExpand(entry.to_string(), e))?;
     let candidate = Path::new(&expanded);
     let absolute: PathBuf = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -117,8 +117,8 @@ fn resolve_include_entry(entry: &str, base_dir: &Path) -> Result<Vec<PathBuf>, C
     };
     if has_glob_meta(&expanded) {
         let pattern = absolute.to_string_lossy();
-        let matches = glob::glob(&pattern)
-            .map_err(|e| ConfigError::IncludeGlob(entry.to_string(), e))?;
+        let matches =
+            glob::glob(&pattern).map_err(|e| ConfigError::IncludeGlob(entry.to_string(), e))?;
         let mut out: Vec<PathBuf> = matches.filter_map(Result::ok).collect();
         out.sort();
         Ok(out)
@@ -477,11 +477,7 @@ identities:
         fn relative_path_anchored_at_main_dir() {
             let dir = tempdir().unwrap();
             write(dir.path(), "sub/extra.yaml", "mounts:\n  x: /a\n");
-            let main = write(
-                dir.path(),
-                "config.yaml",
-                "include:\n  - sub/extra.yaml\n",
-            );
+            let main = write(dir.path(), "config.yaml", "include:\n  - sub/extra.yaml\n");
             let cfg = Config::load_from(&main).unwrap();
             assert_eq!(cfg.mounts.get("x"), Some(&"/a".to_string()));
         }
@@ -490,13 +486,17 @@ identities:
         fn glob_sorted_and_first_wins() {
             let dir = tempdir().unwrap();
             // 10-* is loaded before 20-*, so its value for `shared` wins.
-            write(dir.path(), "conf.d/10-a.yaml", "mounts:\n  shared: /first\n");
-            write(dir.path(), "conf.d/20-b.yaml", "mounts:\n  shared: /second\n");
-            let main = write(
+            write(
                 dir.path(),
-                "config.yaml",
-                "include:\n  - conf.d/*.yaml\n",
+                "conf.d/10-a.yaml",
+                "mounts:\n  shared: /first\n",
             );
+            write(
+                dir.path(),
+                "conf.d/20-b.yaml",
+                "mounts:\n  shared: /second\n",
+            );
+            let main = write(dir.path(), "config.yaml", "include:\n  - conf.d/*.yaml\n");
             let cfg = Config::load_from(&main).unwrap();
             assert_eq!(cfg.mounts.get("shared"), Some(&"/first".to_string()));
         }
@@ -563,21 +563,10 @@ identities:
         fn rejects_nested_include() {
             let dir = tempdir().unwrap();
             write(dir.path(), "leaf.yaml", "mounts: {}\n");
-            write(
-                dir.path(),
-                "extra.yaml",
-                "include:\n  - leaf.yaml\n",
-            );
-            let main = write(
-                dir.path(),
-                "config.yaml",
-                "include:\n  - extra.yaml\n",
-            );
+            write(dir.path(), "extra.yaml", "include:\n  - leaf.yaml\n");
+            let main = write(dir.path(), "config.yaml", "include:\n  - extra.yaml\n");
             let err = Config::load_from(&main).unwrap_err();
-            assert!(
-                matches!(err, ConfigError::NestedInclude(_)),
-                "got {err:?}"
-            );
+            assert!(matches!(err, ConfigError::NestedInclude(_)), "got {err:?}");
         }
 
         #[test]

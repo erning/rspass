@@ -60,8 +60,7 @@ struct Style {
 impl Style {
     fn detect() -> Self {
         use std::io::IsTerminal;
-        let no_color = std::env::var_os("NO_COLOR")
-            .is_some_and(|v| !v.is_empty());
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
         Self {
             enabled: !no_color && std::io::stdout().is_terminal(),
         }
@@ -216,8 +215,7 @@ fn resolve_dir_prefix(
             }
         }
     }
-    let (mount_name, prefix_len) =
-        best.ok_or_else(|| PathError::NoMount(input.to_string()))?;
+    let (mount_name, prefix_len) = best.ok_or_else(|| PathError::NoMount(input.to_string()))?;
     let store_root_str = config.mounts.get(mount_name).expect("mount key must exist");
     let store_root = expand_mount_path(store_root_str)?;
     let rel: PathBuf = components[prefix_len..].iter().collect();
@@ -297,8 +295,7 @@ fn render_children(children: &[Node], prefix: &str, style: &Style) {
             child.name.clone()
         };
         println!("{prefix}{connector}{painted}");
-        let child_prefix =
-            format!("{prefix}{}", if is_last { "    " } else { "│   " });
+        let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
         render_children(&child.children, &child_prefix, style);
     }
 }

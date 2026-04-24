@@ -68,7 +68,12 @@ fn setup() -> (Env, age::x25519::Identity) {
     )
 }
 
-fn encrypt_into(vault: &std::path::Path, identity: &age::x25519::Identity, rel: &str, plaintext: &[u8]) {
+fn encrypt_into(
+    vault: &std::path::Path,
+    identity: &age::x25519::Identity,
+    rel: &str,
+    plaintext: &[u8],
+) {
     let pubkey = identity.to_public();
     let r: &dyn age::Recipient = &pubkey;
     let encryptor = age::Encryptor::with_recipients(std::iter::once(r)).unwrap();
@@ -148,7 +153,11 @@ fn show_uses_agent_when_available() {
     // the agent path was taken without instrumentation, but at minimum it
     // must still produce the right plaintext.
     let show = run(&env, &["show", "api/test"]);
-    assert!(show.status.success(), "show failed: {}", String::from_utf8_lossy(&show.stderr));
+    assert!(
+        show.status.success(),
+        "show failed: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
     assert_eq!(show.stdout, plaintext);
 }
 

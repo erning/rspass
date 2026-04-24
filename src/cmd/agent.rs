@@ -131,10 +131,7 @@ fn ls() -> Result<(), RspassError> {
                 return Ok(());
             }
             for entry in entries {
-                let path = entry
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 println!("{path}");
                 if let Some(pks) = entry.get("pubkeys").and_then(|v| v.as_array()) {
                     for pk in pks {
@@ -341,9 +338,8 @@ fn prompt_and_unlock_scrypt(path: &Path) -> Result<AddOutcome, RspassError> {
 /// tty, never has to prompt) and re-serialised as unencrypted OpenSSH PEM
 /// via the `ssh-key` crate.
 fn build_ssh_identity_data(path: &Path, data: &[u8]) -> Result<AddOutcome, RspassError> {
-    let key = ssh_key::PrivateKey::from_openssh(data).map_err(|e| {
-        RspassError::from(IdentityError::Parse(path.to_path_buf(), e.to_string()))
-    })?;
+    let key = ssh_key::PrivateKey::from_openssh(data)
+        .map_err(|e| RspassError::from(IdentityError::Parse(path.to_path_buf(), e.to_string())))?;
     if !key.is_encrypted() {
         let text = String::from_utf8(data.to_vec()).map_err(|e| {
             RspassError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -362,14 +358,12 @@ fn build_ssh_identity_data(path: &Path, data: &[u8]) -> Result<AddOutcome, Rspas
         }
         match key.decrypt(pass.as_bytes()) {
             Ok(decrypted) => {
-                let pem = decrypted
-                    .to_openssh(ssh_key::LineEnding::LF)
-                    .map_err(|e| {
-                        RspassError::from(IdentityError::Parse(
-                            path.to_path_buf(),
-                            format!("failed to re-encode SSH key: {e}"),
-                        ))
-                    })?;
+                let pem = decrypted.to_openssh(ssh_key::LineEnding::LF).map_err(|e| {
+                    RspassError::from(IdentityError::Parse(
+                        path.to_path_buf(),
+                        format!("failed to re-encode SSH key: {e}"),
+                    ))
+                })?;
                 return Ok(AddOutcome::Ready((*pem).clone()));
             }
             Err(_) => {

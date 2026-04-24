@@ -16,9 +16,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use zeroize::Zeroizing;
 
-use crate::agent::proto::{
-    MAX_CIPHERTEXT_BYTES, Request, Response, read_request, write_response,
-};
+use crate::agent::proto::{MAX_CIPHERTEXT_BYTES, Request, Response, read_request, write_response};
 use crate::agent::socket::{self, SocketError, peer_uid, self_uid};
 use crate::identity::BoxIdentity;
 
@@ -100,9 +98,7 @@ fn verify_peer(stream: &UnixStream, expected_uid: u32) -> Result<(), String> {
 }
 
 fn ensure_parent_dir(socket_path: &Path) -> Result<(), RunError> {
-    let parent = socket_path
-        .parent()
-        .ok_or(RunError::NoParentDir)?;
+    let parent = socket_path.parent().ok_or(RunError::NoParentDir)?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true).mode(0o700);
     builder.create(parent).map_err(RunError::CreateDir)?;
@@ -136,10 +132,7 @@ enum ShouldStop {
     No,
 }
 
-fn handle_connection(
-    agent: &mut Agent,
-    stream: UnixStream,
-) -> std::io::Result<ShouldStop> {
+fn handle_connection(agent: &mut Agent, stream: UnixStream) -> std::io::Result<ShouldStop> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let req = match read_request(&mut reader)? {
@@ -148,7 +141,11 @@ fn handle_connection(
     };
     let (resp, stop) = dispatch(agent, req);
     write_response(&mut writer, &resp)?;
-    Ok(if stop { ShouldStop::Yes } else { ShouldStop::No })
+    Ok(if stop {
+        ShouldStop::Yes
+    } else {
+        ShouldStop::No
+    })
 }
 
 fn dispatch(agent: &mut Agent, req: Request) -> (Response, bool) {
@@ -275,19 +272,11 @@ fn handle_list(agent: &Agent) -> Response {
             })
         })
         .collect();
-    entries.sort_by(|a, b| {
-        a["path"]
-            .as_str()
-            .cmp(&b["path"].as_str())
-    });
+    entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
     Response::ok_with(serde_json::json!({ "identities": entries }))
 }
 
-fn handle_decrypt(
-    agent: &Agent,
-    ciphertext_b64: String,
-    context: Option<String>,
-) -> Response {
+fn handle_decrypt(agent: &Agent, ciphertext_b64: String, context: Option<String>) -> Response {
     let ciphertext =
         match base64::engine::general_purpose::STANDARD.decode(ciphertext_b64.as_bytes()) {
             Ok(b) => b,
@@ -356,4 +345,3 @@ pub enum RunError {
     #[error("failed to bind socket: {0}")]
     Bind(#[source] std::io::Error),
 }
-

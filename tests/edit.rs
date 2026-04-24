@@ -71,10 +71,7 @@ fn mock_editor_that_writes(dir: &std::path::Path, payload: &str) -> PathBuf {
     let script = dir.join("mock-editor.sh");
     std::fs::write(
         &script,
-        format!(
-            "#!/bin/sh\nprintf %s {} > \"$1\"\n",
-            shell_escape(payload)
-        ),
+        format!("#!/bin/sh\nprintf %s {} > \"$1\"\n", shell_escape(payload)),
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;

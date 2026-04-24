@@ -104,7 +104,11 @@ fn stdout_of(o: &std::process::Output) -> String {
 fn list_without_arg_prints_all_mounts_alphabetically() {
     let env = setup_multi_mount();
     let out = run(&env, &["list"]);
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = stdout_of(&out);
 
     // Top label is "rspass".
@@ -149,7 +153,10 @@ fn list_without_arg_prints_all_mounts_alphabetically() {
     }
 
     // Structure under work mount (last, so `    ` continuation).
-    assert!(stdout.contains("    └── token"), "work subtree missing: \n{stdout}");
+    assert!(
+        stdout.contains("    └── token"),
+        "work subtree missing: \n{stdout}"
+    );
 
     // Nothing hidden: no .age suffix on leaves, no .git, no empty_dir.
     assert!(!stdout.contains("notes.age"));
@@ -173,7 +180,10 @@ fn list_with_prefix_narrows_to_subtree() {
     assert!(!stdout.contains("db/"));
     assert!(!stdout.contains("notes"));
     // Must not carry the top wrapper.
-    assert!(!stdout.contains("rspass"), "PREFIX form must not include `rspass` top");
+    assert!(
+        !stdout.contains("rspass"),
+        "PREFIX form must not include `rspass` top"
+    );
 }
 
 #[test]

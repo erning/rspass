@@ -35,8 +35,8 @@ pub enum RecipientError {
 /// callers don't have to worry about symlink chains like macOS's
 /// `/var/folders/...` → `/private/var/folders/...`.
 pub fn load_for(target: &Path, store_root: &Path) -> Result<Vec<BoxRecipient>, RecipientError> {
-    let store_root_canon =
-        fs::canonicalize(store_root).map_err(|e| RecipientError::Io(store_root.to_path_buf(), e))?;
+    let store_root_canon = fs::canonicalize(store_root)
+        .map_err(|e| RecipientError::Io(store_root.to_path_buf(), e))?;
     let start = target.parent().unwrap_or(target);
     let (content, path) = walk_up(start, &store_root_canon)?;
     parse(&content, &path)
@@ -240,9 +240,8 @@ mod tests {
     fn parse_skips_blanks_and_comments() {
         let pub1 = gen_age_pubkey();
         let pub2 = gen_age_pubkey();
-        let content = format!(
-            "# header comment\n\n  # indented comment\n{pub1}\n\n{pub2}\n# trailing\n"
-        );
+        let content =
+            format!("# header comment\n\n  # indented comment\n{pub1}\n\n{pub2}\n# trailing\n");
         let dir = tempdir().unwrap();
         let store = dir.path();
         fs::write(store.join(".age-recipients"), &content).unwrap();

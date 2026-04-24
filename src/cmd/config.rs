@@ -81,10 +81,7 @@ mod tests {
         for _ in 0..5 {
             let c = cfg(&[("work", "/w"), ("", "/root"), ("team", "/t")], &[]);
             let out = render(&c).unwrap();
-            let lines: Vec<&str> = out
-                .lines()
-                .filter(|l| l.starts_with("  "))
-                .collect();
+            let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("  ")).collect();
             assert_eq!(
                 lines,
                 vec![r#"  '': /root"#, "  team: /t", "  work: /w"],

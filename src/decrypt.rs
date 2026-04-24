@@ -116,9 +116,7 @@ fn try_agent_decrypt(ciphertext: &[u8], context: Option<&str>) -> Option<Zeroizi
         .as_ref()
         .and_then(|d| d.get("plaintext"))
         .and_then(|v| v.as_str())?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(Zeroizing::new(bytes))
 }
 

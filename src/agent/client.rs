@@ -56,8 +56,8 @@ impl Client {
     }
 
     pub fn request(&mut self, req: &Request) -> Result<Response, ClientError> {
-        let line = serde_json::to_string(req)
-            .map_err(|e| ClientError::BadResponse(e.to_string()))?;
+        let line =
+            serde_json::to_string(req).map_err(|e| ClientError::BadResponse(e.to_string()))?;
         self.stream.write_all(line.as_bytes())?;
         self.stream.write_all(b"\n")?;
         self.stream.flush()?;
@@ -75,9 +75,6 @@ impl Client {
 pub fn is_agent_alive() -> bool {
     match Client::connect_existing() {
         None => false,
-        Some(mut c) => c
-            .request(&Request::Status)
-            .map(|r| r.ok)
-            .unwrap_or(false),
+        Some(mut c) => c.request(&Request::Status).map(|r| r.ok).unwrap_or(false),
     }
 }
